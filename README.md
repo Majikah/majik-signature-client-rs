@@ -1,7 +1,24 @@
-# majik-signature-client
+# Majik Signature Client
+
+**Majik Signature Client** is a high-level Rust wrapper for `MajikSignature`, built directly on top of `MajikKeyClient`. 
+
+Designed to be used natively within the Majikah ecosystem, it inherits all core `MajikKey` account management—such as creation, lock/unlock states, and active-account tracking—while introducing domain-specific functionality for file signing, contact management, and encrypted reusable stamps.
 
 Rust port of the TS `MajikSignatureClient`, composed on `majik-key-client`: `SignatureClient` owns a
 `KeyClient<SigHooks>` (`keys()` / `keys_mut()`) plus contacts, stamps, logs, preferences and signing.
+
+## Core Capabilities
+
+*   **Integrated Key & Account Management**: Extends `MajikKeyClient` to seamlessly handle account lifecycles and cryptographic unlocking. Accounts can easily be shared alongside `MajikMessage`.
+*   **Contact & Group Directory**: Utilizes `MajikContactManager` for full contact CRUD operations, including system/user groups, favorites, and blocked lists.
+*   **Post-Quantum Signing & Verification**: Provides intuitive methods (`signFile`, `verifyFile`, `batchSignFiles`) for text, raw bytes, and file blobs. Verifications automatically resolve public keys from the internal contact directory or active keystore.
+*   **Multi-sig & Envelope Sealing**: Built-in support for restricted allowlists (`expectedSigners`), multi-sig pending states, and cryptographic sealing to prevent further modifications to a file.
+*   **Encrypted Stamp Assets**: Uses `MajikSignatureStampManager` to securely create, encrypt, and manage reusable assets (signatures, audio, text) bound to the user's ML-KEM keys.
+*   **Data Backup & Restore**: Robust export and hydration capabilities for contacts, stamps, and user preferences utilizing `MajikCompressedJSON` and protected by strict magic byte headers.
+
+---
+
+
 
 | Module | What it covers |
 |---|---|
