@@ -12,9 +12,7 @@ use crate::events::SigOnlyEvent;
 use crate::file_identity::identity_from_key;
 use crate::logs::{AuditAction, CreateUserActivityLog};
 use crate::shared::lock;
-use crate::stamps::{
-    CreateStamp, MajikSignatureStamp, SkippedStamp, StampAssetKind, StampMeta,
-};
+use crate::stamps::{CreateStamp, MajikSignatureStamp, SkippedStamp, StampAssetKind, StampMeta};
 
 #[derive(Debug, Clone, Default)]
 pub struct StampOptions {
@@ -62,7 +60,7 @@ impl SignatureClient {
                 id: None,
             })
         };
-        let stamp = self.report("createStamp", created.map_err(Into::into))?;
+        let stamp = self.report("createStamp", created)?;
         let meta = stamp.meta();
         self.stamp_activity(&meta, AuditAction::StampCreated);
         self.emit(SigOnlyEvent::NewStamp(meta));
@@ -86,7 +84,11 @@ impl SignatureClient {
             return Ok(Vec::new());
         };
         let stamps = lock(&self.shared.stamps)?;
-        Ok(stamps.list_by_fingerprint(&fp).into_iter().map(|s| s.meta()).collect())
+        Ok(stamps
+            .list_by_fingerprint(&fp)
+            .into_iter()
+            .map(|s| s.meta())
+            .collect())
     }
 
     /// Load and decrypt the active account's stamps into memory (the account must be unlocked).
@@ -111,7 +113,9 @@ impl SignatureClient {
     }
 
     pub fn get_stamp_decrypt_error(&self, id: &str) -> Result<Option<String>> {
-        Ok(lock(&self.shared.stamps)?.decrypt_error(id).map(str::to_string))
+        Ok(lock(&self.shared.stamps)?
+            .decrypt_error(id)
+            .map(str::to_string))
     }
 
     /// Plaintext of a stamp already decrypted into memory (see `hydrate_stamps_for_active_account`).

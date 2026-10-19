@@ -109,7 +109,12 @@ impl ContactDirectory {
         assert_id(id)?;
         match self.contacts.shift_remove(id) {
             Some(contact) => {
-                if self.fingerprints.get(contact.fingerprint()).map(String::as_str) == Some(id) {
+                if self
+                    .fingerprints
+                    .get(contact.fingerprint())
+                    .map(String::as_str)
+                    == Some(id)
+                {
                     self.fingerprints.remove(contact.fingerprint());
                 }
                 Ok(api_response(true, "Contact removed successfully"))

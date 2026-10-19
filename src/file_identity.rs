@@ -26,8 +26,12 @@ pub fn identity_from_key(key: &MajikKey) -> Result<MajikFileIdentity> {
             key.id()
         ))
     };
-    let secret = key.get_private_key(KeyId::MlKem768).map_err(|e| no_kem(&e))?;
-    let public = key.get_public_key(KeyId::MlKem768).map_err(|e| no_kem(&e))?;
+    let secret = key
+        .get_private_key(KeyId::MlKem768)
+        .map_err(|e| no_kem(&e))?;
+    let public = key
+        .get_public_key(KeyId::MlKem768)
+        .map_err(|e| no_kem(&e))?;
     Ok(MajikFileIdentity {
         public_key: key.public_key_base64().to_string(),
         fingerprint: key.fingerprint().to_string(),
@@ -65,10 +69,7 @@ pub fn encrypt_envelope(
     })
 }
 
-pub fn decrypt_envelope(
-    data_base64: &str,
-    identity: &MajikFileIdentity,
-) -> Result<Vec<u8>> {
+pub fn decrypt_envelope(data_base64: &str, identity: &MajikFileIdentity) -> Result<Vec<u8>> {
     let binary = base64_to_array(data_base64)?;
     Ok(MajikFile::decrypt(
         &binary,

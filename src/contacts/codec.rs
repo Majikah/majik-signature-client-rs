@@ -61,7 +61,9 @@ pub fn export_compressed(contact: &MajikContact) -> Result<String> {
     let mut enc = GzEncoder::new(Vec::new(), Compression::default());
     enc.write_all(json.as_bytes())
         .map_err(|e| merr(format!("gzip failed: {e}")))?;
-    let bytes = enc.finish().map_err(|e| merr(format!("gzip failed: {e}")))?;
+    let bytes = enc
+        .finish()
+        .map_err(|e| merr(format!("gzip failed: {e}")))?;
     Ok(STANDARD.encode(bytes))
 }
 

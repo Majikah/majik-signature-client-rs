@@ -58,8 +58,8 @@ impl AccountHooks for SigHooks {
             contacts.clear().map_err(|e| hook_err("contacts", e))?;
         }
         {
-            let mut stamps = crate::shared::lock(&self.shared.stamps)
-                .map_err(|e| hook_err("stamps", e))?;
+            let mut stamps =
+                crate::shared::lock(&self.shared.stamps).map_err(|e| hook_err("stamps", e))?;
             stamps.clear().map_err(|e| hook_err("stamps", e))?;
         }
         // Best effort, like the TS `_recordActivity` (which swallows its own failures).

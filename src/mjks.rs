@@ -6,8 +6,8 @@ use majik_signature::{
     BatchFileInput, BatchSignFailure, BatchSignOptions, BatchSignResult, BatchVerifyInput,
     BatchVerifyOptions, BatchVerifySummary, EmbedOptions, EnvelopeInfo, EnvelopeInput,
     FileVerifyResult, FileVerifyStatus, MajikSignature, MajikSignatureEnvelope, MajikSignatureMap,
-    MjksMapEntry, MjksMapJSON, MjksMapResolveStatus, OrderEntry, OrderOptions,
-    SignDetachedOptions, SignatureOrderResult,
+    MjksMapEntry, MjksMapJSON, MjksMapResolveStatus, OrderEntry, OrderOptions, SignDetachedOptions,
+    SignatureOrderResult,
 };
 
 use crate::client::SignatureClient;
@@ -115,7 +115,11 @@ impl SignatureClient {
         ctx: &OpContext,
     ) -> Result<BatchSignResult> {
         let signed = self.with_signing_key(ctx.account_id.as_deref(), false, |key| {
-            Ok(MajikSignature::sign_batch_detached(files, key, Some(options))?)
+            Ok(MajikSignature::sign_batch_detached(
+                files,
+                key,
+                Some(options),
+            )?)
         });
         let (result, sctx) = self.report("signBatchDetached", signed)?;
 
@@ -277,7 +281,9 @@ impl SignatureClient {
                             path: f.path.clone(),
                             status: FileVerifyStatus::Tampered,
                             results: None,
-                            reason: Some("Content does not match the map entry for this path".into()),
+                            reason: Some(
+                                "Content does not match the map entry for this path".into(),
+                            ),
                             relocated_from: None,
                         });
                         continue;
@@ -363,7 +369,10 @@ impl SignatureClient {
 
     // ── Order ────────────────────────────────────────────────────────────────
 
-    fn order_entries(&self, expected: &[SignerRef<'_>]) -> Result<Vec<majik_signature::ExpectedSigner>> {
+    fn order_entries(
+        &self,
+        expected: &[SignerRef<'_>],
+    ) -> Result<Vec<majik_signature::ExpectedSigner>> {
         self.build_expected_signers(expected)
     }
 
@@ -401,7 +410,10 @@ impl SignatureClient {
             let digest = MajikSignature::extract_from(file, options.mime_type.as_deref())
                 .ok()
                 .and_then(|s| s.first().map(|x| x.content_hash().to_string()));
-            Ok((MajikSignature::verify_file_order(file, &entries, Some(&opts))?, digest))
+            Ok((
+                MajikSignature::verify_file_order(file, &entries, Some(&opts))?,
+                digest,
+            ))
         })();
         let (result, digest) = self.report("verifyFileOrder", outcome)?;
         self.note_order_history(digest, result.valid, false, source);
@@ -427,7 +439,12 @@ impl SignatureClient {
                 .ok()
                 .and_then(|e| e.signatures().first().map(|s| s.content_hash.clone()));
             Ok((
-                MajikSignature::verify_file_detached_order(file, envelope.clone(), &entries, Some(&opts))?,
+                MajikSignature::verify_file_detached_order(
+                    file,
+                    envelope.clone(),
+                    &entries,
+                    Some(&opts),
+                )?,
                 digest,
             ))
         })();
@@ -478,11 +495,19 @@ impl SignatureClient {
                 strict,
             };
             let envelope = EnvelopeInput::Json(entry.envelope.clone());
-            let result =
-                MajikSignature::verify_file_detached_order(&f.blob, envelope, &entries, Some(&opts));
+            let result = MajikSignature::verify_file_detached_order(
+                &f.blob,
+                envelope,
+                &entries,
+                Some(&opts),
+            );
             match result {
                 Ok(order) => {
-                    let digest = entry.envelope.signatures.first().map(|s| s.content_hash.clone());
+                    let digest = entry
+                        .envelope
+                        .signatures
+                        .first()
+                        .map(|s| s.content_hash.clone());
                     self.note_order_history(digest, order.valid, true, source);
                     out.push(MapOrderFileResult {
                         path: f.path.clone(),

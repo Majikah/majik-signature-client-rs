@@ -33,16 +33,14 @@ use crate::bus::{Bus, Listener, ListenerId};
 use crate::error::{Result, SignatureClientError};
 use crate::events::{SigEvent, SigOnlyEvent};
 use crate::hooks::SigHooks;
+use crate::logs::repo::SharedConnection;
 use crate::logs::{
     init_log_schema, AuditAction, CreateHistoryLog, CreateUserActivityLog, HistoryLog, LogManager,
     MemoryLogRepo, SkippedLog, SqliteLogRepo, UserActivityLog,
 };
-use crate::logs::repo::SharedConnection;
 use crate::prefs::{self, UserAppPreferences};
 use crate::shared::{lock, SigShared};
-use crate::stamps::{
-    init_stamp_schema, SkippedStamp, SqliteStampRepo, StampManager,
-};
+use crate::stamps::{init_stamp_schema, SkippedStamp, SqliteStampRepo, StampManager};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,7 +103,10 @@ impl SignatureClient {
     pub fn in_memory() -> Self {
         let shared = Arc::new(SigShared {
             contacts: Mutex::new(ContactManager::in_memory()),
-            history: Mutex::new(LogManager::new(Box::new(MemoryLogRepo::new()), "history log")),
+            history: Mutex::new(LogManager::new(
+                Box::new(MemoryLogRepo::new()),
+                "history log",
+            )),
             activity: Mutex::new(LogManager::new(
                 Box::new(MemoryLogRepo::new()),
                 "user activity log",
@@ -385,7 +386,12 @@ impl SignatureClient {
             let mut contacts = self.shared.lock_contacts()?;
             contacts.update_contact_meta(id, meta)?;
         }
-        if let Some(label) = meta.label.as_deref().map(str::trim).filter(|l| !l.is_empty()) {
+        if let Some(label) = meta
+            .label
+            .as_deref()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+        {
             self.keys.key_manager_mut().update_label(id, label)?;
         }
         let updated = {
@@ -545,12 +551,7 @@ impl SignatureClient {
 
     /// Empty the directory, then put the own accounts' contacts back (see module docs).
     pub fn clear_directory(&mut self) -> Result<()> {
-        let own: Vec<MajikContact> = self
-            .keys
-            .list_own_accounts()
-            .into_iter()
-            .cloned()
-            .collect();
+        let own: Vec<MajikContact> = self.keys.list_own_accounts().into_iter().cloned().collect();
         let mut contacts = self.shared.lock_contacts()?;
         contacts.clear()?;
         for account in own {
@@ -647,7 +648,10 @@ impl SignatureClient {
         })
     }
 
-    pub fn add_contact_to_favorites(&mut self, contact_id: &str) -> Result<SerializedMajikContactGroup> {
+    pub fn add_contact_to_favorites(
+        &mut self,
+        contact_id: &str,
+    ) -> Result<SerializedMajikContactGroup> {
         self.group_change(|c| Ok(c.add_to_favorites(contact_id)?.to_json()))
     }
 

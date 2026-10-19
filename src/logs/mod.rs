@@ -8,6 +8,6 @@ pub use repo::{
     SCHEMA_USER_ACTIVITY_LOGS,
 };
 pub use types::{
-    AuditAction, CreateHistoryLog, CreateUserActivityLog, HistoryLog, HistorySource,
-    HistoryStatus, HistoryType, LogEnvelope, LogRecord, NotaryNetwork, SignatureOperation, UserActivityLog,
+    AuditAction, CreateHistoryLog, CreateUserActivityLog, HistoryLog, HistorySource, HistoryStatus,
+    HistoryType, LogEnvelope, LogRecord, NotaryNetwork, SignatureOperation, UserActivityLog,
 };

@@ -159,6 +159,9 @@ impl<T: LogRecord> LogManager<T> {
                 .unwrap_or(jiff::Timestamp::MIN)
         });
         let excess = logs.len() - max;
-        logs.iter().take(excess).map(|l| l.id().to_string()).collect()
+        logs.iter()
+            .take(excess)
+            .map(|l| l.id().to_string())
+            .collect()
     }
 }

@@ -63,7 +63,11 @@ pub struct AutosaveSet {
 pub struct SigningPreferences {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auto_seal: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "defaultToTSA")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "defaultToTSA"
+    )]
     pub default_to_tsa: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_to_detached: Option<bool>,
@@ -200,23 +204,36 @@ impl UserAppPreferences {
         self.signing.default_to_detached.unwrap_or(false)
     }
     pub fn is_auto_lock_on_minimize_enabled(&self) -> bool {
-        self.key_prefs().and_then(|k| k.auto_lock_on_minimize).unwrap_or(false)
+        self.key_prefs()
+            .and_then(|k| k.auto_lock_on_minimize)
+            .unwrap_or(false)
     }
     pub fn auto_lock_interval(&self) -> Option<f64> {
         self.key_prefs().and_then(|k| k.auto_lock_interval)
     }
     /// Defaults to `true`: an unlocked account stays unlocked between operations.
     pub fn is_onetime_unlock_enabled(&self) -> bool {
-        self.key_prefs().and_then(|k| k.onetime_unlock).unwrap_or(true)
+        self.key_prefs()
+            .and_then(|k| k.onetime_unlock)
+            .unwrap_or(true)
     }
     pub fn is_auto_save_after_sign_enabled(&self) -> bool {
-        self.autosave().and_then(|a| a.after_sign.as_ref()).and_then(|p| p.enabled).unwrap_or(false)
+        self.autosave()
+            .and_then(|a| a.after_sign.as_ref())
+            .and_then(|p| p.enabled)
+            .unwrap_or(false)
     }
     pub fn is_auto_save_after_seal_enabled(&self) -> bool {
-        self.autosave().and_then(|a| a.after_seal.as_ref()).and_then(|p| p.enabled).unwrap_or(false)
+        self.autosave()
+            .and_then(|a| a.after_seal.as_ref())
+            .and_then(|p| p.enabled)
+            .unwrap_or(false)
     }
     pub fn is_auto_save_after_notarize_enabled(&self) -> bool {
-        self.autosave().and_then(|a| a.after_notary.as_ref()).and_then(|p| p.enabled).unwrap_or(false)
+        self.autosave()
+            .and_then(|a| a.after_notary.as_ref())
+            .and_then(|p| p.enabled)
+            .unwrap_or(false)
     }
     /// History logging is on unless explicitly disabled.
     pub fn is_history_enabled(&self) -> bool {
@@ -224,7 +241,11 @@ impl UserAppPreferences {
     }
     /// Per-account history cap; `0` means unlimited.
     pub fn history_max_count(&self) -> u32 {
-        self.general.history.as_ref().and_then(|h| h.max_count).unwrap_or(100)
+        self.general
+            .history
+            .as_ref()
+            .and_then(|h| h.max_count)
+            .unwrap_or(100)
     }
 
     fn key_prefs(&self) -> Option<&KeyPreferences> {
@@ -244,12 +265,17 @@ pub fn load(state: &mut ClientStateManager) -> Result<UserAppPreferences> {
             save(state, &defaults)?;
             Ok(defaults)
         }
-        Some(raw) => Ok(serde_json::from_str(&raw).unwrap_or_else(|_| UserAppPreferences::defaults())),
+        Some(raw) => {
+            Ok(serde_json::from_str(&raw).unwrap_or_else(|_| UserAppPreferences::defaults()))
+        }
     }
 }
 
 pub fn save(state: &mut ClientStateManager, prefs: &UserAppPreferences) -> Result<()> {
-    state.set(STATE_KEY_USER_APP_PREFERENCES, &serde_json::to_string(prefs)?)?;
+    state.set(
+        STATE_KEY_USER_APP_PREFERENCES,
+        &serde_json::to_string(prefs)?,
+    )?;
     Ok(())
 }
 

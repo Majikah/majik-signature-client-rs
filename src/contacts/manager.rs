@@ -157,8 +157,11 @@ impl ContactManager {
 
     pub fn block_contact(&mut self, id: &str) -> Result<&MajikContact> {
         self.directory.block_contact(id)?;
-        self.groups
-            .add_contact_to_group_if_absent(&mut self.directory, SYSTEM_GROUP_ID_BLOCKED, id)?;
+        self.groups.add_contact_to_group_if_absent(
+            &mut self.directory,
+            SYSTEM_GROUP_ID_BLOCKED,
+            id,
+        )?;
         self.persist_contact(id)?;
         self.persist_group(SYSTEM_GROUP_ID_BLOCKED)?;
         self.require(id)
@@ -320,7 +323,11 @@ impl ContactManager {
         self.groups.has_group(id)
     }
 
-    pub fn list_groups(&self, include_system: bool, sorted_by_name: bool) -> Vec<&MajikContactGroup> {
+    pub fn list_groups(
+        &self,
+        include_system: bool,
+        sorted_by_name: bool,
+    ) -> Vec<&MajikContactGroup> {
         self.groups.list_groups(include_system, sorted_by_name)
     }
 
@@ -343,7 +350,8 @@ impl ContactManager {
         description: Option<&str>,
         color: Option<&str>,
     ) -> Result<&MajikContactGroup> {
-        self.groups.update_group_meta(id, name, description, color)?;
+        self.groups
+            .update_group_meta(id, name, description, color)?;
         self.persist_group(id)?;
         self.groups.get_group_or_err(id)
     }
@@ -461,7 +469,8 @@ impl ContactManager {
     // ── Favorites / blocked ──────────────────────────────────────────────────
 
     pub fn add_to_favorites(&mut self, contact_id: &str) -> Result<&MajikContactGroup> {
-        self.groups.add_to_favorites(&mut self.directory, contact_id)?;
+        self.groups
+            .add_to_favorites(&mut self.directory, contact_id)?;
         let id = majik_contact::SYSTEM_GROUP_ID_FAVORITES;
         self.persist_group(id)?;
         self.groups.get_group_or_err(id)

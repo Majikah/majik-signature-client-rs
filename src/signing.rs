@@ -193,7 +193,11 @@ pub(crate) struct OpNote<'a> {
 }
 
 impl<'a> OpNote<'a> {
-    pub(crate) fn new(reference: &'a str, history_type: HistoryType, source: HistorySource) -> Self {
+    pub(crate) fn new(
+        reference: &'a str,
+        history_type: HistoryType,
+        source: HistorySource,
+    ) -> Self {
         Self {
             reference,
             history_type,
@@ -372,7 +376,10 @@ impl SignatureClient {
     // ── Signer resolution ────────────────────────────────────────────────────
 
     /// Public signing keys of an unlocked-or-not own account.
-    pub fn get_signing_public_keys(&self, account_id: Option<&str>) -> Result<MajikSignerPublicKeys> {
+    pub fn get_signing_public_keys(
+        &self,
+        account_id: Option<&str>,
+    ) -> Result<MajikSignerPublicKeys> {
         let id = self.resolve_account_id(account_id)?;
         let key = self.keys.key_manager().get(&id).ok_or_else(|| {
             SignatureClientError::Invalid(format!("Account not found in keystore: \"{id}\""))
@@ -385,7 +392,9 @@ impl SignatureClient {
     }
 
     fn contact_to_expected_signer(contact: &MajikContact) -> Result<ExpectedSigner> {
-        if contact.ed_public_key_base64().is_empty() || contact.ml_dsa_public_key_base64().is_empty() {
+        if contact.ed_public_key_base64().is_empty()
+            || contact.ml_dsa_public_key_base64().is_empty()
+        {
             return Err(SignatureClientError::Invalid(format!(
                 "Contact \"{}\" has no signing public keys",
                 contact.id()
@@ -399,7 +408,9 @@ impl SignatureClient {
     }
 
     fn contact_to_public_keys(contact: &MajikContact) -> Result<MajikSignerPublicKeys> {
-        if contact.ed_public_key_base64().is_empty() || contact.ml_dsa_public_key_base64().is_empty() {
+        if contact.ed_public_key_base64().is_empty()
+            || contact.ml_dsa_public_key_base64().is_empty()
+        {
             return Err(SignatureClientError::Invalid(format!(
                 "Contact \"{}\" has no signing public keys",
                 contact.id()
@@ -476,7 +487,9 @@ impl SignatureClient {
             content_type: signature.content_type().map(str::to_string),
             signature,
         };
-        self.emit(SigOnlyEvent::Sign(SignEventPayload::from(&result)));
+        self.emit(SigOnlyEvent::Sign(Box::new(SignEventPayload::from(
+            &result,
+        ))));
         let reference = result.content_hash.clone();
         self.note_history(
             Some(&sctx.fingerprint),
@@ -526,7 +539,10 @@ impl SignatureClient {
         options: Option<&SignOptions>,
         ctx: &OpContext,
     ) -> Result<String> {
-        Ok(self.sign(content, options, ctx)?.signature.to_json_string()?)
+        Ok(self
+            .sign(content, options, ctx)?
+            .signature
+            .to_json_string()?)
     }
 
     pub fn sign_content(
@@ -580,7 +596,12 @@ impl SignatureClient {
             signer_label,
         };
         self.emit(SigOnlyEvent::Verify(verified.clone()));
-        if let Some(hash) = verified.result.content_hash.clone().filter(|h| !h.is_empty()) {
+        if let Some(hash) = verified
+            .result
+            .content_hash
+            .clone()
+            .filter(|h| !h.is_empty())
+        {
             let fp = self.active_fingerprint();
             let mut note = OpNote::new(&hash, HistoryType::Verify, source);
             note.status = HistoryStatus::Success;
@@ -647,7 +668,12 @@ impl SignatureClient {
         target: &VerifyTarget<'_>,
         source: HistorySource,
     ) -> Result<VerifyResult> {
-        self.verify_content(content, SigInput::Serialized(signature.to_string()), target, source)
+        self.verify_content(
+            content,
+            SigInput::Serialized(signature.to_string()),
+            target,
+            source,
+        )
     }
 
     /// Verify many (content, signature) pairs. Individual failures become `Err` entries.

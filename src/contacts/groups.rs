@@ -240,7 +240,11 @@ impl GroupManager {
         self.groups.contains_key(id)
     }
 
-    pub fn list_groups(&self, include_system: bool, sorted_by_name: bool) -> Vec<&MajikContactGroup> {
+    pub fn list_groups(
+        &self,
+        include_system: bool,
+        sorted_by_name: bool,
+    ) -> Vec<&MajikContactGroup> {
         let mut out: Vec<&MajikContactGroup> = self
             .groups
             .values()
@@ -320,7 +324,9 @@ impl GroupManager {
     ) -> Result<&MajikContactGroup> {
         assert_group_id(group_id)?;
         if contact_ids.is_empty() {
-            return Err(gerr("addContactsToGroup: contactIds array must not be empty"));
+            return Err(gerr(
+                "addContactsToGroup: contactIds array must not be empty",
+            ));
         }
         for (i, id) in contact_ids.iter().enumerate() {
             if id.trim().is_empty() {
@@ -331,7 +337,9 @@ impl GroupManager {
         }
         let unique: HashSet<&String> = contact_ids.iter().collect();
         if unique.len() != contact_ids.len() {
-            return Err(gerr("addContactsToGroup: contactIds must not contain duplicates"));
+            return Err(gerr(
+                "addContactsToGroup: contactIds must not contain duplicates",
+            ));
         }
         let group = self.get_ref(group_id)?;
         for id in contact_ids {
@@ -404,7 +412,9 @@ impl GroupManager {
         assert_group_id(from_group_id)?;
         assert_group_id(to_group_id)?;
         if from_group_id == to_group_id {
-            return Err(gerr("moveContact: source and destination groups must be different"));
+            return Err(gerr(
+                "moveContact: source and destination groups must be different",
+            ));
         }
         require_contact(dir, contact_id, "moveContact")?;
         let from = self.get_ref(from_group_id)?;
@@ -459,11 +469,9 @@ impl GroupManager {
         group_id: &str,
     ) -> Result<Vec<&'a MajikContact>> {
         let mut contacts = self.get_contacts_in_group(dir, group_id)?;
-        contacts.sort_by_key(|c| {
-            match c.meta.label.as_deref() {
-                Some(l) if !l.is_empty() => l.to_lowercase(),
-                _ => c.id().to_lowercase(),
-            }
+        contacts.sort_by_key(|c| match c.meta.label.as_deref() {
+            Some(l) if !l.is_empty() => l.to_lowercase(),
+            _ => c.id().to_lowercase(),
         });
         Ok(contacts)
     }
@@ -578,12 +586,13 @@ impl GroupManager {
 
         for serialized in data {
             if serialized.id.is_empty() {
-                return Err(gerr("fromJSON: encountered an invalid serialized group entry"));
+                return Err(gerr(
+                    "fromJSON: encountered an invalid serialized group entry",
+                ));
             }
             let id = serialized.id.clone();
-            let group = MajikContactGroup::from_json(serialized).map_err(|e| {
-                gerr(format!("fromJSON: failed to restore group \"{id}\": {e}"))
-            })?;
+            let group = MajikContactGroup::from_json(serialized)
+                .map_err(|e| gerr(format!("fromJSON: failed to restore group \"{id}\": {e}")))?;
             let members = group.list_member_ids();
 
             if is_system_group_id(group.id()) {

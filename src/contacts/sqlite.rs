@@ -66,9 +66,11 @@ impl ContactRepo for SqliteContactRepo {
     fn get_by_id(&self, id: &str) -> Result<Option<SerializedMajikContact>> {
         let g = lock(&self.conn)?;
         let row: Option<String> = g
-            .query_row("SELECT json FROM majik_contacts WHERE id = ?1", params![id], |r| {
-                r.get::<_, String>(0)
-            })
+            .query_row(
+                "SELECT json FROM majik_contacts WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, String>(0),
+            )
             .optional()?;
         match row {
             Some(json) => Ok(Some(parse_contact(id, &json)?)),
@@ -107,7 +109,11 @@ impl ContactRepo for SqliteContactRepo {
     fn exists(&self, id: &str) -> Result<bool> {
         let g = lock(&self.conn)?;
         let found: Option<i64> = g
-            .query_row("SELECT 1 FROM majik_contacts WHERE id = ?1", params![id], |r| r.get(0))
+            .query_row(
+                "SELECT 1 FROM majik_contacts WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
             .optional()?;
         Ok(found.is_some())
     }
@@ -208,7 +214,10 @@ impl GroupRepo for SqliteGroupRepo {
 
     fn remove(&self, id: &str) -> Result<bool> {
         let g = lock(&self.conn)?;
-        Ok(g.execute("DELETE FROM majik_contact_groups WHERE id = ?1", params![id])? > 0)
+        Ok(g.execute(
+            "DELETE FROM majik_contact_groups WHERE id = ?1",
+            params![id],
+        )? > 0)
     }
 
     fn clear(&self) -> Result<()> {
@@ -218,7 +227,9 @@ impl GroupRepo for SqliteGroupRepo {
 
     fn count(&self) -> Result<usize> {
         let g = lock(&self.conn)?;
-        let n: i64 = g.query_row("SELECT COUNT(*) FROM majik_contact_groups", [], |r| r.get(0))?;
+        let n: i64 = g.query_row("SELECT COUNT(*) FROM majik_contact_groups", [], |r| {
+            r.get(0)
+        })?;
         Ok(n as usize)
     }
 
@@ -254,7 +265,10 @@ impl GroupRepo for SqliteGroupRepo {
         let mut g = lock(&self.conn)?;
         let tx = g.transaction()?;
         for id in ids {
-            tx.execute("DELETE FROM majik_contact_groups WHERE id = ?1", params![id])?;
+            tx.execute(
+                "DELETE FROM majik_contact_groups WHERE id = ?1",
+                params![id],
+            )?;
         }
         tx.commit()?;
         Ok(())

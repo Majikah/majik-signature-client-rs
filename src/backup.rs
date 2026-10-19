@@ -115,7 +115,10 @@ impl Default for SelectiveRestoreOptions {
     }
 }
 
-fn pack<T: Serialize + serde::de::DeserializeOwned>(magic: &[u8; MAGIC_SIZE], payload: T) -> Result<Vec<u8>> {
+fn pack<T: Serialize + serde::de::DeserializeOwned>(
+    magic: &[u8; MAGIC_SIZE],
+    payload: T,
+) -> Result<Vec<u8>> {
     let body = MajikCompressedJson::<T>::from_payload(payload)?.to_binary();
     let mut out = Vec::with_capacity(MAGIC_SIZE + body.len());
     out.extend_from_slice(magic);
@@ -142,7 +145,9 @@ fn unpack<T: Serialize + serde::de::DeserializeOwned>(
             )));
         }
     }
-    Ok(MajikCompressedJson::<T>::decompress(bytes[MAGIC_SIZE..].to_vec())?)
+    Ok(MajikCompressedJson::<T>::decompress(
+        bytes[MAGIC_SIZE..].to_vec(),
+    )?)
 }
 
 fn temp_manager(json: &ContactManagerJson) -> Result<ContactManager> {
@@ -153,9 +158,15 @@ fn temp_manager(json: &ContactManagerJson) -> Result<ContactManager> {
     )?)
 }
 
-fn contacts_and_groups(json: &ContactManagerJson) -> Result<(Vec<MajikContact>, Vec<MajikContactGroup>)> {
+fn contacts_and_groups(
+    json: &ContactManagerJson,
+) -> Result<(Vec<MajikContact>, Vec<MajikContactGroup>)> {
     let temp = temp_manager(json)?;
-    let contacts = temp.list_contacts(false, false).into_iter().cloned().collect();
+    let contacts = temp
+        .list_contacts(false, false)
+        .into_iter()
+        .cloned()
+        .collect();
     let groups = temp.list_groups(true, false).into_iter().cloned().collect();
     Ok((contacts, groups))
 }
@@ -234,7 +245,11 @@ impl SignatureClient {
     /// Add backed-up contacts. For an id that already exists, `overwrite` updates its label, notes
     /// and blocked flag from the backup; otherwise it is skipped. (The TS version called
     /// `addContact`, which throws for an existing id.)
-    fn restore_contact_list(&mut self, contacts: Vec<MajikContact>, overwrite: bool) -> Result<usize> {
+    fn restore_contact_list(
+        &mut self,
+        contacts: Vec<MajikContact>,
+        overwrite: bool,
+    ) -> Result<usize> {
         let mut count = 0;
         for contact in contacts {
             let exists = lock(&self.shared.contacts)?.has_contact(contact.id());

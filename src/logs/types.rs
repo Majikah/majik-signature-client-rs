@@ -143,7 +143,9 @@ fn validate_base(
         return Err(log_err("Missing Reference ID"));
     }
     if log_type != expected_type {
-        return Err(log_err(&format!("Invalid root type: expected \"{expected_type}\"")));
+        return Err(log_err(&format!(
+            "Invalid root type: expected \"{expected_type}\""
+        )));
     }
     if timestamp.is_empty() {
         return Err(log_err("Missing Timestamp"));

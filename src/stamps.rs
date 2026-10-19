@@ -312,7 +312,13 @@ impl StampRepo for MemoryStampRepo {
         Ok(())
     }
     fn get_by_id(&self, id: &str) -> Result<Option<StampJson>> {
-        Ok(self.rows.lock().map_err(poisoned)?.iter().find(|r| r.id == id).cloned())
+        Ok(self
+            .rows
+            .lock()
+            .map_err(poisoned)?
+            .iter()
+            .find(|r| r.id == id)
+            .cloned())
     }
     fn list(&self) -> Result<Vec<StampJson>> {
         Ok(self.rows.lock().map_err(poisoned)?.clone())
@@ -346,7 +352,12 @@ impl StampRepo for MemoryStampRepo {
         Ok(self.rows.lock().map_err(poisoned)?.len())
     }
     fn exists(&self, id: &str) -> Result<bool> {
-        Ok(self.rows.lock().map_err(poisoned)?.iter().any(|r| r.id == id))
+        Ok(self
+            .rows
+            .lock()
+            .map_err(poisoned)?
+            .iter()
+            .any(|r| r.id == id))
     }
 }
 
@@ -481,10 +492,10 @@ impl StampRepo for SqliteStampRepo {
     }
 
     fn remove(&self, id: &str) -> Result<bool> {
-        Ok(self
-            .lock()?
-            .execute("DELETE FROM majik_signature_stamps WHERE id = ?1", params![id])?
-            > 0)
+        Ok(self.lock()?.execute(
+            "DELETE FROM majik_signature_stamps WHERE id = ?1",
+            params![id],
+        )? > 0)
     }
 
     fn bulk_remove(&self, ids: &[String]) -> Result<()> {
@@ -494,21 +505,27 @@ impl StampRepo for SqliteStampRepo {
         let mut g = self.lock()?;
         let tx = g.transaction()?;
         for id in ids {
-            tx.execute("DELETE FROM majik_signature_stamps WHERE id = ?1", params![id])?;
+            tx.execute(
+                "DELETE FROM majik_signature_stamps WHERE id = ?1",
+                params![id],
+            )?;
         }
         tx.commit()?;
         Ok(())
     }
 
     fn clear(&self) -> Result<()> {
-        self.lock()?.execute("DELETE FROM majik_signature_stamps", [])?;
+        self.lock()?
+            .execute("DELETE FROM majik_signature_stamps", [])?;
         Ok(())
     }
 
     fn count(&self) -> Result<usize> {
-        let n: i64 = self
-            .lock()?
-            .query_row("SELECT COUNT(*) FROM majik_signature_stamps", [], |r| r.get(0))?;
+        let n: i64 =
+            self.lock()?
+                .query_row("SELECT COUNT(*) FROM majik_signature_stamps", [], |r| {
+                    r.get(0)
+                })?;
         Ok(n as usize)
     }
 
@@ -625,7 +642,11 @@ impl StampManager {
 
     /// Wipe every cached plaintext. Returns how many stamps had one.
     pub fn lock_all(&mut self) -> usize {
-        self.cache.values_mut().map(|s| s.lock()).filter(|b| *b).count()
+        self.cache
+            .values_mut()
+            .map(|s| s.lock())
+            .filter(|b| *b)
+            .count()
     }
 
     pub fn to_json(&self) -> Result<Vec<StampJson>> {
@@ -755,7 +776,8 @@ impl StampManager {
             id: Some(existing.id.clone()),
         })?;
         self.repo.save(&replacement.to_json())?;
-        self.cache.insert(replacement.id.clone(), replacement.clone());
+        self.cache
+            .insert(replacement.id.clone(), replacement.clone());
         Ok(replacement)
     }
 

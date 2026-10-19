@@ -3,11 +3,12 @@
 
 use jiff::Timestamp;
 use majik_signature::{
-    CanSignResult, EmbedOptions, EnvelopeInfo, EnvelopeInput, ExpectedSigner, FileChainVerification,
-    MajikSignature, MajikSignatureEnvelope, MajikSignatureError, MajikSignerPublicKeys,
-    MajikTimestamp, RevisionSetVerification, SealResult, SignAndEmbedOptions, SignAndEmbedResult,
-    SignDetachedOptions, SignDetachedResult, SignatoriesFilter, SignatoriesResult, SignatoryInfo,
-    SealInfo, VerificationResult, VerifyFileOptions, VerifyRevisionsOptions,
+    CanSignResult, EmbedOptions, EnvelopeInfo, EnvelopeInput, ExpectedSigner,
+    FileChainVerification, MajikSignature, MajikSignatureEnvelope, MajikSignatureError,
+    MajikSignerPublicKeys, MajikTimestamp, RevisionSetVerification, SealInfo, SealResult,
+    SignAndEmbedOptions, SignAndEmbedResult, SignDetachedOptions, SignDetachedResult,
+    SignatoriesFilter, SignatoriesResult, SignatoryInfo, VerificationResult, VerifyFileOptions,
+    VerifyRevisionsOptions,
 };
 
 use crate::client::SignatureClient;
@@ -127,7 +128,9 @@ impl SignatureClient {
             timestamp: result.signature.timestamp().to_string(),
             content_type: result.signature.content_type().map(str::to_string),
         };
-        self.emit(SigOnlyEvent::Sign(SignEventPayload::from(&sign_result)));
+        self.emit(SigOnlyEvent::Sign(Box::new(SignEventPayload::from(
+            &sign_result,
+        ))));
         let digest = sign_result.content_hash.clone();
         let mut note = OpNote::new(&digest, HistoryType::Sign, source);
         note.tsa = result.signature.has_tsa();
@@ -152,7 +155,11 @@ impl SignatureClient {
         let detached = options.to_detached();
         let want_envelope = options.save_history.unwrap_or(true);
         let signed = self.with_signing_key(ctx.account_id.as_deref(), want_envelope, |key| {
-            Ok(MajikSignature::sign_file_detached(file, key, Some(&detached))?)
+            Ok(MajikSignature::sign_file_detached(
+                file,
+                key,
+                Some(&detached),
+            )?)
         });
         let (result, sctx) = self.report("signFileDetached", signed)?;
         self.after_detached_sign(&result, &sctx, want_envelope, ctx.source);
@@ -173,7 +180,9 @@ impl SignatureClient {
             timestamp: result.signature.timestamp().to_string(),
             content_type: result.signature.content_type().map(str::to_string),
         };
-        self.emit(SigOnlyEvent::Sign(SignEventPayload::from(&sign_result)));
+        self.emit(SigOnlyEvent::Sign(Box::new(SignEventPayload::from(
+            &sign_result,
+        ))));
         let digest = sign_result.content_hash.clone();
         let mut note = OpNote::new(&digest, HistoryType::Sign, source);
         note.detached = true;
@@ -204,8 +213,8 @@ impl SignatureClient {
                 if mime.is_some() {
                     embed.embed.mime_type = mime.clone();
                 }
-                let result = MajikSignature::sign_file(blob, key, Some(&embed))
-                    .map_err(|e| e.to_string());
+                let result =
+                    MajikSignature::sign_file(blob, key, Some(&embed)).map_err(|e| e.to_string());
                 outcomes.push(BatchSignOutcome {
                     path: path.clone(),
                     result,
@@ -246,7 +255,12 @@ impl SignatureClient {
             signer_label,
         };
         self.emit(SigOnlyEvent::Verify(verified.clone()));
-        if let Some(hash) = verified.result.content_hash.clone().filter(|h| !h.is_empty()) {
+        if let Some(hash) = verified
+            .result
+            .content_hash
+            .clone()
+            .filter(|h| !h.is_empty())
+        {
             let fp = self.active_fingerprint();
             let mut note = OpNote::new(&hash, HistoryType::Verify, source);
             note.detached = detached;
@@ -317,7 +331,11 @@ impl SignatureClient {
         let keys = self.resolve_signer_public_keys(target)?;
         let mut opts = Self::verify_options(target);
         let parsed = MajikSignatureEnvelope::from_input(envelope.clone())?;
-        let tsa = parsed.signatures().first().map(|s| s.tsa.is_some()).unwrap_or(false);
+        let tsa = parsed
+            .signatures()
+            .first()
+            .map(|s| s.tsa.is_some())
+            .unwrap_or(false);
         let result = match keys {
             Some(k) => first(MajikSignature::verify_file_detached(
                 file,
@@ -404,7 +422,11 @@ impl SignatureClient {
             let keys = self.resolve_signer_public_keys(target)?;
             let opts = Self::verify_options(target);
             let parsed = MajikSignatureEnvelope::from_input(envelope.clone())?;
-            let tsa = parsed.signatures().first().map(|s| s.tsa.is_some()).unwrap_or(false);
+            let tsa = parsed
+                .signatures()
+                .first()
+                .map(|s| s.tsa.is_some())
+                .unwrap_or(false);
             let results = match keys {
                 Some(k) => {
                     MajikSignature::verify_file_detached(file, envelope.clone(), &k, Some(&opts))?
@@ -459,32 +481,32 @@ impl SignatureClient {
         revisions: &[&[u8]],
         options: Option<VerifyRevisionsOptions<'_>>,
     ) -> Result<RevisionSetVerification> {
-        let own_or_contact = |signer_id: &str| -> std::result::Result<
-            MajikSignerPublicKeys,
-            MajikSignatureError,
-        > {
-            if let Some(key) = self.keys.key_manager().get(signer_id) {
-                return MajikSignature::public_keys_from_majik_key(key);
-            }
-            if let Ok(contacts) = self.shared.lock_contacts() {
-                if let Some(c) = contacts.get_contact_by_fingerprint(signer_id) {
-                    if !c.ed_public_key_base64().is_empty()
-                        && !c.ml_dsa_public_key_base64().is_empty()
-                    {
-                        return Ok(MajikSignerPublicKeys {
-                            signer_id: c.fingerprint().to_string(),
-                            ed_public_key: majik_signature::base64_to_bytes(c.ed_public_key_base64())?,
-                            ml_dsa_public_key: majik_signature::base64_to_bytes(
-                                c.ml_dsa_public_key_base64(),
-                            )?,
-                        });
+        let own_or_contact =
+            |signer_id: &str| -> std::result::Result<MajikSignerPublicKeys, MajikSignatureError> {
+                if let Some(key) = self.keys.key_manager().get(signer_id) {
+                    return MajikSignature::public_keys_from_majik_key(key);
+                }
+                if let Ok(contacts) = self.shared.lock_contacts() {
+                    if let Some(c) = contacts.get_contact_by_fingerprint(signer_id) {
+                        if !c.ed_public_key_base64().is_empty()
+                            && !c.ml_dsa_public_key_base64().is_empty()
+                        {
+                            return Ok(MajikSignerPublicKeys {
+                                signer_id: c.fingerprint().to_string(),
+                                ed_public_key: majik_signature::base64_to_bytes(
+                                    c.ed_public_key_base64(),
+                                )?,
+                                ml_dsa_public_key: majik_signature::base64_to_bytes(
+                                    c.ml_dsa_public_key_base64(),
+                                )?,
+                            });
+                        }
                     }
                 }
-            }
-            Err(MajikSignatureError::key(format!(
-                "No public keys known for signer \"{signer_id}\""
-            )))
-        };
+                Err(MajikSignatureError::key(format!(
+                    "No public keys known for signer \"{signer_id}\""
+                )))
+            };
         let result = match options {
             Some(o) if o.resolve_public_keys.is_some() => {
                 MajikSignature::verify_file_revisions(final_file, revisions, Some(&o))
@@ -579,7 +601,11 @@ impl SignatureClient {
         Ok(MajikSignature::get_all_signatories(file, mime_type)?)
     }
 
-    pub fn get_issuer(&self, file: &[u8], mime_type: Option<&str>) -> Result<Option<SignatoryInfo>> {
+    pub fn get_issuer(
+        &self,
+        file: &[u8],
+        mime_type: Option<&str>,
+    ) -> Result<Option<SignatoryInfo>> {
         Ok(MajikSignature::get_issuer(file, mime_type)?)
     }
 

@@ -186,8 +186,13 @@ fn opt_text(v: &Option<String>) -> SqlValue {
 
 impl LogRow for HistoryLog {
     const TABLE: &'static str = TABLE_HISTORY_LOGS;
-    const EXTRA_COLUMNS: &'static [&'static str] =
-        &["historyType", "status", "source", "network", "transactionId"];
+    const EXTRA_COLUMNS: &'static [&'static str] = &[
+        "historyType",
+        "status",
+        "source",
+        "network",
+        "transactionId",
+    ];
     fn reference_id(&self) -> &str {
         &self.reference_id
     }
@@ -236,8 +241,15 @@ pub struct SqliteLogRepo<T: LogRow> {
 
 impl<T: LogRow> SqliteLogRepo<T> {
     pub fn new(conn: SharedConnection) -> Self {
-        let mut columns: Vec<&str> =
-            vec!["id", "json", "reference_id", "type", "fingerprint", "version", "timestamp"];
+        let mut columns: Vec<&str> = vec![
+            "id",
+            "json",
+            "reference_id",
+            "type",
+            "fingerprint",
+            "version",
+            "timestamp",
+        ];
         columns.extend(T::EXTRA_COLUMNS.iter().copied());
         let placeholders: Vec<String> = (1..=columns.len()).map(|i| format!("?{i}")).collect();
         // Table and column names are compile-time constants of the `LogRow` impls.
@@ -368,7 +380,9 @@ impl<T: LogRow> LogRepo<T> for SqliteLogRepo<T> {
 
     fn count(&self) -> Result<usize> {
         let g = lock(&self.conn)?;
-        let n: i64 = g.query_row(&format!("SELECT COUNT(*) FROM {}", T::TABLE), [], |r| r.get(0))?;
+        let n: i64 = g.query_row(&format!("SELECT COUNT(*) FROM {}", T::TABLE), [], |r| {
+            r.get(0)
+        })?;
         Ok(n as usize)
     }
 

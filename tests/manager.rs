@@ -74,7 +74,8 @@ fn add_contacts_is_atomic() {
     assert!(matches!(err, ContactManagerError::Directory(_)));
     assert!(!m.has_contact("b"), "no partial add");
 
-    m.add_contacts(vec![contact("b", "B"), contact("c", "C")]).unwrap();
+    m.add_contacts(vec![contact("b", "B"), contact("c", "C")])
+        .unwrap();
     assert_eq!(m.list_contacts(false, false).len(), 3);
 }
 
@@ -92,7 +93,11 @@ fn list_sorted_by_label_and_majikah_filter() {
     assert_eq!(labels, vec!["Alice", "bob", "charlie"]);
 
     m.set_majikah_status("2", true).unwrap();
-    let only: Vec<&str> = m.list_contacts(false, true).iter().map(|c| c.id()).collect();
+    let only: Vec<&str> = m
+        .list_contacts(false, true)
+        .iter()
+        .map(|c| c.id())
+        .collect();
     assert_eq!(only, vec!["2"]);
     assert!(m.is_majikah_registered("2").unwrap());
 }
@@ -112,7 +117,9 @@ fn update_meta_ignores_empty_label_and_notes() {
     let c = m.get_contact("a").unwrap();
     assert_eq!(c.meta.label.as_deref(), Some("A"), "empty label ignored");
     assert_eq!(c.meta.notes.as_deref(), Some("note"));
-    assert!(m.update_contact_meta("zzz", &MajikContactMeta::default()).is_err());
+    assert!(m
+        .update_contact_meta("zzz", &MajikContactMeta::default())
+        .is_err());
 }
 
 #[test]
@@ -128,9 +135,11 @@ fn blocking_syncs_contact_and_blocked_group() {
     assert!(!m.is_contact_blocked("a").unwrap());
 
     // Adding to the Blocked group directly blocks the contact; removing unblocks it.
-    m.add_contact_to_group(SYSTEM_GROUP_ID_BLOCKED, "b").unwrap();
+    m.add_contact_to_group(SYSTEM_GROUP_ID_BLOCKED, "b")
+        .unwrap();
     assert!(m.get_contact("b").unwrap().is_blocked());
-    m.remove_contact_from_group(SYSTEM_GROUP_ID_BLOCKED, "b").unwrap();
+    m.remove_contact_from_group(SYSTEM_GROUP_ID_BLOCKED, "b")
+        .unwrap();
     assert!(!m.get_contact("b").unwrap().is_blocked());
 }
 
@@ -142,14 +151,24 @@ fn group_lifecycle_and_system_group_protection() {
         .unwrap();
     assert_eq!(g.member_count(), 2);
     assert!(m.create_group("g1", "Dup", None, None).is_err());
-    assert!(m.create_group("g2", "Bad", None, Some(vec!["nope".into()])).is_err());
-    assert!(m.create_group(SYSTEM_GROUP_ID_FAVORITES, "x", None, None).is_err());
+    assert!(m
+        .create_group("g2", "Bad", None, Some(vec!["nope".into()]))
+        .is_err());
+    assert!(m
+        .create_group(SYSTEM_GROUP_ID_FAVORITES, "x", None, None)
+        .is_err());
     assert!(m.remove_group(SYSTEM_GROUP_ID_BLOCKED).is_err());
 
     m.add_contact_to_group("g1", "c").unwrap();
-    assert!(m.add_contact_to_group("g1", "c").is_err(), "already a member");
+    assert!(
+        m.add_contact_to_group("g1", "c").is_err(),
+        "already a member"
+    );
     assert!(m.add_contact_to_group_if_absent("g1", "c").is_ok());
-    assert_eq!(m.get_group_ids_for_contact("c").unwrap(), vec!["g1".to_string()]);
+    assert_eq!(
+        m.get_group_ids_for_contact("c").unwrap(),
+        vec!["g1".to_string()]
+    );
 
     m.create_group("g2", "Home", None, None).unwrap();
     m.move_contact_between_groups("c", "g1", "g2").unwrap();
@@ -165,9 +184,14 @@ fn group_lifecycle_and_system_group_protection() {
     assert_eq!(names, vec!["Home", "Work"]);
     assert_eq!(m.list_system_groups().len(), 2);
 
-    m.update_group_meta("g1", Some("Office"), Some("desc"), Some("#fff")).unwrap();
+    m.update_group_meta("g1", Some("Office"), Some("desc"), Some("#fff"))
+        .unwrap();
     m.update_group_meta("g1", None, None, None).unwrap();
-    assert_eq!(m.get_group("g1").unwrap().meta.color.as_deref(), Some("#fff"), "color kept");
+    assert_eq!(
+        m.get_group("g1").unwrap().meta.color.as_deref(),
+        Some("#fff"),
+        "color kept"
+    );
 
     assert!(m.remove_group("g1").unwrap().success);
     assert!(!m.remove_group("g1").unwrap().success);
@@ -177,10 +201,15 @@ fn group_lifecycle_and_system_group_protection() {
 #[test]
 fn add_contacts_to_group_is_all_or_nothing() {
     let mut m = manager_with(&["a", "b"]);
-    m.create_group("g", "G", None, Some(vec!["a".into()])).unwrap();
-    assert!(m.add_contacts_to_group("g", &["b".into(), "a".into()]).is_err());
+    m.create_group("g", "G", None, Some(vec!["a".into()]))
+        .unwrap();
+    assert!(m
+        .add_contacts_to_group("g", &["b".into(), "a".into()])
+        .is_err());
     assert!(!m.is_contact_in_group("g", "b").unwrap(), "b not added");
-    assert!(m.add_contacts_to_group("g", &["b".into(), "b".into()]).is_err());
+    assert!(m
+        .add_contacts_to_group("g", &["b".into(), "b".into()])
+        .is_err());
     assert!(m.add_contacts_to_group("g", &[]).is_err());
     m.add_contacts_to_group("g", &["b".into()]).unwrap();
     assert_eq!(m.get_contacts_in_group_sorted("g").unwrap().len(), 2);
@@ -202,7 +231,8 @@ fn removing_a_contact_removes_it_from_groups_and_storage() {
     let conn = shared_conn();
     let mut m = ContactManager::with_sqlite(Arc::clone(&conn)).unwrap();
     m.add_contact(contact("a", "A")).unwrap();
-    m.create_group("g", "G", None, Some(vec!["a".into()])).unwrap();
+    m.create_group("g", "G", None, Some(vec!["a".into()]))
+        .unwrap();
     m.add_to_favorites("a").unwrap();
 
     assert!(m.remove_contact("a").unwrap().success);
@@ -225,7 +255,8 @@ fn sqlite_roundtrip_preserves_everything_including_majikah_status() {
         m.add_contact(contact("b", "Bob")).unwrap();
         m.set_majikah_status("a", true).unwrap();
         m.block_contact("b").unwrap();
-        m.create_group("g", "Friends", None, Some(vec!["a".into()])).unwrap();
+        m.create_group("g", "Friends", None, Some(vec!["a".into()]))
+            .unwrap();
         m.add_to_favorites("a").unwrap();
     }
     let mut m2 = ContactManager::with_sqlite(conn).unwrap();
@@ -233,13 +264,19 @@ fn sqlite_roundtrip_preserves_everything_including_majikah_status() {
     assert_eq!(report.contacts_loaded, 2);
     assert!(report.contacts_skipped.is_empty());
 
-    assert!(m2.is_majikah_registered("a").unwrap(), "registration state survives restart");
+    assert!(
+        m2.is_majikah_registered("a").unwrap(),
+        "registration state survives restart"
+    );
     assert!(m2.get_contact("b").unwrap().is_blocked());
     assert!(m2.is_contact_blocked("b").unwrap());
     assert!(m2.is_favorite("a").unwrap());
     assert_eq!(m2.get_group("g").unwrap().meta.name, "Friends");
     assert_eq!(m2.get_group_ids_for_contact("a").unwrap().len(), 2); // g + favorites
-    assert_eq!(m2.get_contact("a").unwrap().meta.label.as_deref(), Some("Alice"));
+    assert_eq!(
+        m2.get_contact("a").unwrap().meta.label.as_deref(),
+        Some("Alice")
+    );
 }
 
 #[test]
@@ -265,11 +302,18 @@ fn reads_rows_written_in_the_ts_adapter_shape_and_prunes_orphans() {
     let mut m = ContactManager::with_sqlite(conn).unwrap();
     let report = m.hydrate().unwrap();
     assert_eq!(report.contacts_loaded, 1);
-    assert_eq!(m.get_contact("c1").unwrap().meta.label.as_deref(), Some("Alice"));
+    assert_eq!(
+        m.get_contact("c1").unwrap().meta.label.as_deref(),
+        Some("Alice")
+    );
     assert_eq!(m.get_contact_by_fingerprint("fp1").unwrap().id(), "c1");
 
     let g = m.get_group("g1").unwrap();
-    assert_eq!(g.list_member_ids(), vec!["c1".to_string()], "ghost member pruned");
+    assert_eq!(
+        g.list_member_ids(),
+        vec!["c1".to_string()],
+        "ghost member pruned"
+    );
     // System groups are bootstrapped even though the TS database never stored them.
     assert!(m.get_favorites_group().is_ok() && m.get_blocked_group().is_ok());
 }
@@ -282,10 +326,13 @@ fn malformed_contact_rows_are_reported_not_fatal() {
     {
         // Valid JSON for the row, but an empty public key makes the contact itself invalid.
         let bad = r#"{"id":"bad","fingerprint":"fpb","meta":{},"publicKeyBase64":"","mlKey":"x"}"#;
-        conn.lock().unwrap().execute(
-            "INSERT INTO majik_contacts (id, json) VALUES (?1, ?2)",
-            rusqlite::params!["bad", bad],
-        ).unwrap();
+        conn.lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO majik_contacts (id, json) VALUES (?1, ?2)",
+                rusqlite::params!["bad", bad],
+            )
+            .unwrap();
     }
     let mut m2 = ContactManager::with_sqlite(conn).unwrap();
     let report = m2.hydrate().unwrap();
@@ -312,7 +359,10 @@ fn export_import_json_and_compressed_roundtrip() {
     let mut dst2 = ContactManager::in_memory();
     let r2 = dst2.import_contact_from_string(&shared);
     assert!(r2.success, "{}", r2.message);
-    assert_eq!(dst2.get_contact("a").unwrap().address(), src.get_contact("a").unwrap().address());
+    assert_eq!(
+        dst2.get_contact("a").unwrap().address(),
+        src.get_contact("a").unwrap().address()
+    );
 
     // Importing the same contact twice reports failure rather than erroring.
     assert!(!dst2.import_contact_from_string(&shared).success);
@@ -338,7 +388,8 @@ fn import_rejects_garbage_and_decompression_bombs() {
 #[test]
 fn whole_manager_json_roundtrip_and_clear() {
     let mut m = manager_with(&["a", "b"]);
-    m.create_group("g", "G", None, Some(vec!["a".into()])).unwrap();
+    m.create_group("g", "G", None, Some(vec!["a".into()]))
+        .unwrap();
     m.block_contact("b").unwrap();
     let json = m.to_json();
 
@@ -359,20 +410,36 @@ fn whole_manager_json_roundtrip_and_clear() {
 
     m.clear().unwrap();
     assert!(m.list_contacts(false, false).is_empty());
-    assert!(m.get_favorites_group().is_ok(), "system groups survive clear");
+    assert!(
+        m.get_favorites_group().is_ok(),
+        "system groups survive clear"
+    );
     assert!(m.list_user_groups(false).is_empty());
 }
 
 #[test]
 fn contacts_by_ids_and_public_keys() {
     let m = manager_with(&["a", "b"]);
-    let ids = vec!["a".to_string(), "a".to_string(), "zz".to_string(), "b".to_string()];
-    let got: Vec<&str> = m.get_contacts_by_ids(&ids, false).unwrap().iter().map(|c| c.id()).collect();
+    let ids = vec![
+        "a".to_string(),
+        "a".to_string(),
+        "zz".to_string(),
+        "b".to_string(),
+    ];
+    let got: Vec<&str> = m
+        .get_contacts_by_ids(&ids, false)
+        .unwrap()
+        .iter()
+        .map(|c| c.id())
+        .collect();
     assert_eq!(got, vec!["a", "b"]);
     assert!(m.get_contacts_by_ids(&ids, true).is_err());
 
     let keys = vec![m.get_contact("b").unwrap().address(), "unknown".to_string()];
-    assert_eq!(m.get_contacts_by_public_keys(&keys, false).unwrap().len(), 1);
+    assert_eq!(
+        m.get_contacts_by_public_keys(&keys, false).unwrap().len(),
+        1
+    );
     assert!(m.get_contacts_by_public_keys(&keys, true).is_err());
 }
 

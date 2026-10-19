@@ -5,15 +5,15 @@
 use majik_key_client::ClientEvent;
 use serde::Serialize;
 
-use crate::logs::{HistoryLog, UserActivityLog};
 use crate::contacts::majik_contact::{SerializedMajikContact, SerializedMajikContactGroup};
+use crate::logs::{HistoryLog, UserActivityLog};
 use crate::signing::{SignEventPayload, VerifyResult};
 use crate::stamps::StampMeta;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "type", content = "payload", rename_all = "kebab-case")]
 pub enum SigOnlyEvent {
-    Sign(SignEventPayload),
+    Sign(Box<SignEventPayload>),
     Verify(VerifyResult),
     NewStamp(StampMeta),
     RemovedStamp(String),
