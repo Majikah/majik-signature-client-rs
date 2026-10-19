@@ -1,0 +1,32 @@
+[package]
+name = "majik-signature-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+description = "Signature client for Majikah apps: composes majik-key-client with contacts, stamps, logs and signing."
+license = "Apache-2.0"
+
+[dependencies]
+# Switch the two path dependencies to crates.io versions once they are published.
+majik-key-client = "0.2.1"
+majik-contact = { version = "=0.2.0", default-features = false }
+flate2 = "1"
+rusqlite = "0.40"
+majik-key = "1.1.1"
+majik-signature = "1.1.0"
+majik-file = "1.0.1"
+majik-cjson = "1.0.0"
+base64 = "0.23"
+zeroize = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+indexmap = { version = "2", features = ["serde"] }
+jiff = "0.2"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+rusqlite = { version = "0.40", features = ["bundled"] }
+
+[profile.dev.package."*"]
+opt-level = 3
