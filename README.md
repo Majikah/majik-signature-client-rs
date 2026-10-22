@@ -4,7 +4,7 @@
 
 Designed to be used natively within the Majikah ecosystem, it inherits all core `MajikKey` account management—such as creation, lock/unlock states, and active-account tracking—while introducing domain-specific functionality for file signing, contact management, and encrypted reusable stamps.
 
-Rust port of the TS `MajikSignatureClient`, composed on `majik-key-client`: `SignatureClient` owns a
+Rust port of the TS [@majikah/majik-signature-client](https://www.npmjs.com/package/@majikah/majik-signature), composed on `majik-key-client`: `SignatureClient` owns a
 `KeyClient<SigHooks>` (`keys()` / `keys_mut()`) plus contacts, stamps, logs, preferences and signing.
 
 ## Core Capabilities
@@ -29,3 +29,27 @@ Rust port of the TS `MajikSignatureClient`, composed on `majik-key-client`: `Sig
 | `stamps`, `stamps_api` | encrypted stamps (`MajikFile` envelopes), repositories (`majik_signature_stamps`), manager, client API |
 | `backup` | `STMP` / `MJKC` / `MJKA` backups (magic header + `majik-cjson`), read / restore / selective restore |
 | `logs`, `prefs`, `events`, `hooks`, `shared`, `bus` | history + activity logs (TS JSON + tables), user app preferences, one merged event stream, own-account<->contact sync |
+
+
+
+## License
+
+[Apache-2.0](LICENSE) — free for personal and commercial use.
+
+---
+## Author
+
+Developed by **Josef Elijah Fabian (Zelijah)** | [Majikah Solutions OPC](https://majikah.solutions/about)
+
+## About the Developer
+
+- **Developer**: Josef Elijah Fabian
+- **GitHub**: [https://github.com/jedlsf](https://github.com/jedlsf)
+- **Project Repository**: [https://github.com/Majikah/majik-signature-client-rs](https://github.com/Majikah/majik-signature-client-rs)
+
+---
+
+## Contact
+
+- **Business Email**: [business@thezelijah.world](mailto:business@thezelijah.world)
+- **Official Website**: [https://www.thezelijah.world](https://www.thezelijah.world)

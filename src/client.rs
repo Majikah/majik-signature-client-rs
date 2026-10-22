@@ -22,7 +22,7 @@ use crate::contacts::majik_contact::{
     MajikApiResponse, MajikContact, MajikContactGroup, MajikContactMeta,
     PartialMajikContactGroupMeta, SerializedMajikContactGroup, SYSTEM_GROUP_ID_FAVORITES,
 };
-use crate::contacts::{codec, ContactManager};
+use crate::contacts::{self, codec, ContactManager};
 use majik_key_client::{
     ClientEvent, ClientStateRepo, HydrateReport as KeyHydrateReport, KeyClient, KeystoreRepo,
 };
@@ -45,7 +45,7 @@ use crate::stamps::{init_stamp_schema, SkippedStamp, SqliteStampRepo, StampManag
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HydrateReport {
-    pub contacts: crate::contacts::HydrateReport,
+    pub contacts: contacts::HydrateReport,
     pub history_skipped: Vec<SkippedLog>,
     pub activity_skipped: Vec<SkippedLog>,
     pub stamps_skipped: Vec<SkippedStamp>,
@@ -76,6 +76,8 @@ pub struct SignatureClient {
     pub(crate) signing_session_depth: u32,
     /// The account an explicit `begin_signing_session` unlocked (re-locked by the matching end).
     pub(crate) session_account_id: Option<String>,
+    /// Signed-but-not-yet-timestamped results, keyed by token (see `tsa.rs`).
+    pub(crate) pending_tsa: Vec<(String, crate::tsa::PendingTsa)>,
 }
 
 impl SignatureClient {
@@ -154,6 +156,7 @@ impl SignatureClient {
             events,
             signing_session_depth: 0,
             session_account_id: None,
+            pending_tsa: Vec::new(),
         }
     }
 
@@ -520,7 +523,7 @@ impl SignatureClient {
     fn insert_imported(
         &self,
         contact: MajikContact,
-    ) -> Result<crate::contacts::majik_contact::SerializedMajikContact> {
+    ) -> Result<contacts::majik_contact::SerializedMajikContact> {
         let json = contact.to_json();
         let mut contacts = self.shared.lock_contacts()?;
         contacts.add_contact(contact)?;
@@ -529,7 +532,7 @@ impl SignatureClient {
 
     fn finish_import(
         &self,
-        outcome: Result<crate::contacts::majik_contact::SerializedMajikContact>,
+        outcome: Result<contacts::majik_contact::SerializedMajikContact>,
     ) -> MajikApiResponse {
         match outcome {
             Ok(json) => {

@@ -5,6 +5,7 @@
 //! `unlockRequired` error; the UI collects the passphrase, calls `keys_mut().unlock_account(..)`
 //! and retries.
 
+use crate::contacts::majik_contact::MajikContact;
 use jiff::Timestamp;
 use majik_file::MajikFileIdentity;
 use majik_key::{KeyId, MajikKey};
@@ -15,7 +16,6 @@ use majik_signature::{
 use serde::Serialize;
 
 use crate::client::SignatureClient;
-use crate::contacts::majik_contact::MajikContact;
 use crate::error::{Result, SignatureClientError};
 use crate::events::SigOnlyEvent;
 use crate::file_identity::identity_from_key;
@@ -123,6 +123,9 @@ impl SigInput {
 /// with none of them the keys are read from the signature itself (self-asserted).
 #[derive(Clone, Default)]
 pub struct VerifyTarget<'a> {
+    /// Already-resolved trusted keys; highest precedence (lets callers pass an own account's
+    /// keys without borrowing the key manager across a `&mut self` call).
+    pub public_keys: Option<&'a MajikSignerPublicKeys>,
     pub contact_id: Option<&'a str>,
     /// Base64 X25519 public key of a known contact.
     pub address: Option<&'a str>,
@@ -447,6 +450,9 @@ impl SignatureClient {
         &self,
         target: &VerifyTarget<'_>,
     ) -> Result<Option<MajikSignerPublicKeys>> {
+        if let Some(keys) = target.public_keys {
+            return Ok(Some(keys.clone()));
+        }
         if let Some(key) = target.key {
             return Ok(Some(MajikSignature::public_keys_from_majik_key(key)?));
         }

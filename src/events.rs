@@ -2,10 +2,10 @@
 //! Wire format is the same for both: `{ "type": "<kebab-name>", "payload": ... }`, so the TS side
 //! sees one stream.
 
+use crate::contacts::majik_contact::{SerializedMajikContact, SerializedMajikContactGroup};
 use majik_key_client::ClientEvent;
 use serde::Serialize;
 
-use crate::contacts::majik_contact::{SerializedMajikContact, SerializedMajikContactGroup};
 use crate::logs::{HistoryLog, UserActivityLog};
 use crate::signing::{SignEventPayload, VerifyResult};
 use crate::stamps::StampMeta;

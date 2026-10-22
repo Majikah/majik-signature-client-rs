@@ -1,12 +1,11 @@
 //! Error type for the signature client.
 
+use crate::contacts::ContactManagerError;
 use majik_cjson::MajikCjsonError;
 use majik_file::MajikFileError;
 use majik_key_client::KeyClientError;
 use majik_signature::MajikSignatureError;
 use thiserror::Error;
-
-use crate::contacts::ContactManagerError;
 
 #[derive(Debug, Error)]
 pub enum SignatureClientError {
@@ -24,6 +23,12 @@ pub enum SignatureClientError {
 
     #[error(transparent)]
     Cjson(#[from] MajikCjsonError),
+
+    /// A file argument could not be loaded or written. `kind` is stable for the TS side:
+    /// `fileNotFound`, `fileNotAFile`, `fileUnreadable`, `fileEmpty`, `fileTooLarge`,
+    /// `fileInvalid`, `fileExists`, `fileWriteFailed`.
+    #[error("{message}")]
+    FileInput { kind: &'static str, message: String },
 
     #[error("Log error: {0}")]
     Log(String),
@@ -56,6 +61,7 @@ impl SignatureClientError {
             Self::Signature(_) => "signature",
             Self::File(_) => "file",
             Self::Cjson(_) => "cjson",
+            Self::FileInput { kind, .. } => kind,
             Self::Log(_) => "log",
             Self::Storage(_) => "storage",
             Self::Invalid(_) => "invalid",
