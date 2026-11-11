@@ -1,6 +1,6 @@
 [package]
 name = "majik-signature-client"
-version = "0.1.0"
+version = "1.2.0"
 edition = "2021"
 rust-version = "1.80"
 description = "Signature client for Majikah apps: composes majik-key-client with contacts, stamps, logs and signing."
@@ -13,7 +13,7 @@ majik-contact = { version = "=0.2.0", default-features = false }
 flate2 = "1"
 rusqlite = "0.40"
 majik-key = "1.1.1"
-majik-signature = "1.1.0"
+majik-signature = "1.2.0"
 majik-file = "1.0.1"
 majik-cjson = "1.0.0"
 base64 = "0.23"

@@ -445,6 +445,10 @@ fn detached_options(
         Some(f) => Some(EnvelopeInput::Bytes(f.load()?.bytes)),
         None => None,
     };
+    let prior_file = match &dto.prior_file {
+        Some(f) => Some(f.load()?.bytes),
+        None => None,
+    };
     Ok(SignDetachedFileOptions {
         content_type: dto.content_type.clone(),
         timestamp: dto.timestamp.clone(),
@@ -452,6 +456,8 @@ fn detached_options(
         expected_signers: signers(c, &dto.expected_signers)?,
         valid_until: dto.valid_until.clone(),
         existing_envelope: existing,
+        prior_file,
+        message: dto.message.clone(),
         tsa: dto.tsa.clone(),
         save_history: dto.save_history,
     })
@@ -703,6 +709,23 @@ pub fn verify_file_chain(
     })
 }
 
+pub fn verify_file_detached_chain(
+    c: &SignatureClient,
+    input: &FileInput,
+    envelope: &FileInput,
+    now: Option<&str>,
+) -> Result<ChainDto> {
+    let file = input.load()?;
+    let envelope = EnvelopeInput::Bytes(envelope.load()?.bytes);
+    let now = parse_now(now)?;
+    let r = c.verify_file_detached_chain(&file.bytes, envelope, file.mime_type.as_deref(), now)?;
+    Ok(ChainDto {
+        latest: r.latest,
+        history: r.history,
+        chain_valid: r.chain_valid,
+    })
+}
+
 pub fn verify_file_revisions(
     c: &SignatureClient,
     final_file: &FileInput,
@@ -720,6 +743,41 @@ pub fn verify_file_revisions(
         resolve_public_keys: None,
     };
     let r = c.verify_file_revisions(&last.bytes, &refs, Some(opts))?;
+    Ok(RevisionSetDto {
+        all_valid: r.all_valid,
+        is_complete_set: r.is_complete_set,
+        results: r
+            .results
+            .into_iter()
+            .map(|x| RevisionCheckDto {
+                version: x.version,
+                status: x.status,
+                signer_id: x.signer_id,
+                reason: x.reason,
+            })
+            .collect(),
+    })
+}
+
+pub fn verify_file_revisions_detached(
+    c: &SignatureClient,
+    final_file: &FileInput,
+    revisions: &[FileInput],
+    envelope: &FileInput,
+) -> Result<RevisionSetDto> {
+    let last = final_file.load()?;
+    let loaded: Vec<Vec<u8>> = revisions
+        .iter()
+        .map(|r| r.load().map(|f| f.bytes))
+        .collect::<Result<_>>()?;
+    let refs: Vec<&[u8]> = loaded.iter().map(|v| v.as_slice()).collect();
+    let envelope = EnvelopeInput::Bytes(envelope.load()?.bytes);
+    let opts = majik_signature::VerifyRevisionsOptions {
+        mime_type: last.mime_type,
+        now: None,
+        resolve_public_keys: None,
+    };
+    let r = c.verify_file_revisions_detached(&last.bytes, &refs, envelope, Some(opts))?;
     Ok(RevisionSetDto {
         all_valid: r.all_valid,
         is_complete_set: r.is_complete_set,

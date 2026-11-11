@@ -172,6 +172,12 @@ pub struct SignDetachedOptionsDto {
     /// An existing `.mjksig` to co-sign.
     #[serde(default)]
     pub existing_envelope: Option<FileInput>,
+    /// The prior detached revision, before this signer modified it.
+    #[serde(default)]
+    pub prior_file: Option<FileInput>,
+    /// Free-form note stored on the new file-version entry.
+    #[serde(default)]
+    pub message: Option<String>,
     #[serde(default)]
     pub tsa: Option<MajikTimestamp>,
     #[serde(default)]

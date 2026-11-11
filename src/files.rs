@@ -58,6 +58,10 @@ pub struct SignDetachedFileOptions {
     pub valid_until: Option<String>,
     /// Co-sign an existing detached envelope instead of starting a new one.
     pub existing_envelope: Option<EnvelopeInput>,
+    /// The prior detached revision, before this signer modified it.
+    pub prior_file: Option<Vec<u8>>,
+    /// Free-form note stored on the new file-version entry.
+    pub message: Option<String>,
     pub tsa: Option<MajikTimestamp>,
     pub save_history: Option<bool>,
 }
@@ -74,6 +78,8 @@ impl SignDetachedFileOptions {
             valid_until: self.valid_until.clone(),
             expected_signers: self.expected_signers.clone(),
             existing_envelope: self.existing_envelope.clone(),
+            prior_file: self.prior_file.clone(),
+            message: self.message.clone(),
             tsa: self.tsa.clone(),
         }
     }
@@ -473,6 +479,20 @@ impl SignatureClient {
         )
     }
 
+    /// Verify a detached envelope's version chain (latest signature plus earlier commitments).
+    pub fn verify_file_detached_chain(
+        &self,
+        file: &[u8],
+        envelope: EnvelopeInput,
+        mime_type: Option<&str>,
+        now: Option<Timestamp>,
+    ) -> Result<FileChainVerification> {
+        self.report(
+            "verifyFileDetachedChain",
+            Ok(MajikSignature::verify_file_detached_chain(file, envelope, mime_type, now)?),
+        )
+    }
+
     /// Verify `final_file` against its earlier `revisions`. When `options` has no
     /// `resolve_public_keys`, signers are resolved from your own accounts, then your contacts.
     pub fn verify_file_revisions(
@@ -522,6 +542,70 @@ impl SignatureClient {
             }
         };
         self.report("verifyFileRevisions", Ok(result?))
+    }
+
+    /// Verify supplied clean detached revisions against a sidecar envelope's `fileVersions` chain.
+    /// When `options` has no `resolve_public_keys`, signers are resolved from your own accounts,
+    /// then your contacts.
+    pub fn verify_file_revisions_detached(
+        &self,
+        final_file: &[u8],
+        revisions: &[&[u8]],
+        envelope: EnvelopeInput,
+        options: Option<VerifyRevisionsOptions<'_>>,
+    ) -> Result<RevisionSetVerification> {
+        let own_or_contact =
+            |signer_id: &str| -> std::result::Result<MajikSignerPublicKeys, MajikSignatureError> {
+                if let Some(key) = self.keys.key_manager().get(signer_id) {
+                    return MajikSignature::public_keys_from_majik_key(key);
+                }
+                if let Ok(contacts) = self.shared.lock_contacts() {
+                    if let Some(c) = contacts.get_contact_by_fingerprint(signer_id) {
+                        if !c.ed_public_key_base64().is_empty()
+                            && !c.ml_dsa_public_key_base64().is_empty()
+                        {
+                            return Ok(MajikSignerPublicKeys {
+                                signer_id: c.fingerprint().to_string(),
+                                ed_public_key: majik_signature::base64_to_bytes(
+                                    c.ed_public_key_base64(),
+                                )?,
+                                ml_dsa_public_key: majik_signature::base64_to_bytes(
+                                    c.ml_dsa_public_key_base64(),
+                                )?,
+                            });
+                        }
+                    }
+                }
+                Err(MajikSignatureError::key(format!(
+                    "No public keys known for signer \"{signer_id}\""
+                )))
+            };
+        let result = match options {
+            Some(o) if o.resolve_public_keys.is_some() => {
+                MajikSignature::verify_file_revisions_detached(
+                    final_file,
+                    revisions,
+                    envelope,
+                    Some(&o),
+                )
+            }
+            other => {
+                let mime = other.as_ref().and_then(|o| o.mime_type.clone());
+                let now = other.and_then(|o| o.now);
+                let opts = VerifyRevisionsOptions {
+                    mime_type: mime,
+                    now,
+                    resolve_public_keys: Some(&own_or_contact),
+                };
+                MajikSignature::verify_file_revisions_detached(
+                    final_file,
+                    revisions,
+                    envelope,
+                    Some(&opts),
+                )
+            }
+        };
+        self.report("verifyFileRevisionsDetached", Ok(result?))
     }
 
     // ── Inspect / strip ──────────────────────────────────────────────────────

@@ -24,7 +24,7 @@ Rust port of the TS [@majikah/majik-signature-client](https://www.npmjs.com/pack
 |---|---|
 | `client` | construction (`in_memory`, `with_sqlite`), TS-order hydration, preferences, logs, own-account meta, contact + group API with events and audit entries |
 | `signing` | `with_signing_key`, signing sessions (closure and explicit begin/end), signer resolution, `sign*`, `verify*` |
-| `files` | `sign_file[_detached]`, `batch_sign_files`, `verify_file*` (+ all-signatures, chain, revisions), seal, allowlist, signatories, envelope info |
+| `files` | `sign_file[_detached]`, `batch_sign_files`, `verify_file*` (+ all-signatures, embedded/detached chain and revision verification), seal, allowlist, signatories, envelope info |
 | `mjks` | `.mjksmap` read/describe/sign/cosign/verify, signing-order verification |
 | `stamps`, `stamps_api` | encrypted stamps (`MajikFile` envelopes), repositories (`majik_signature_stamps`), manager, client API |
 | `backup` | `STMP` / `MJKC` / `MJKA` backups (magic header + `majik-cjson`), read / restore / selective restore |
