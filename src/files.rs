@@ -489,7 +489,9 @@ impl SignatureClient {
     ) -> Result<FileChainVerification> {
         self.report(
             "verifyFileDetachedChain",
-            Ok(MajikSignature::verify_file_detached_chain(file, envelope, mime_type, now)?),
+            Ok(MajikSignature::verify_file_detached_chain(
+                file, envelope, mime_type, now,
+            )?),
         )
     }
 
