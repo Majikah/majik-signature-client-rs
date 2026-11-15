@@ -378,6 +378,54 @@ impl SignatureClient {
 
     // ── Signer resolution ────────────────────────────────────────────────────
 
+    /// Resolve the active account's domain-separated Majik Key Solana address.
+    ///
+    /// This deliberately goes through the guarded signing-key path: derived Solana
+    /// material is private-key-dependent even though the result is a public address.
+    /// An active signing session keeps the account unlocked across adjacent IPC calls.
+    pub fn get_solana_signer_address(&mut self, account_id: Option<&str>) -> Result<String> {
+        let result = self
+            .with_signing_key(account_id, false, |key| {
+                let web3 = key.web3().ok_or_else(|| {
+                    SignatureClientError::Invalid(
+                        "This account does not expose a Majik Key Solana signer.".into(),
+                    )
+                })?;
+                Ok(web3.solana.address())
+            })
+            .map(|(address, _)| address);
+        self.report("getSolanaSignerAddress", result)
+    }
+
+    /// Sign an exact message with the account's domain-separated Majik Key Solana signer.
+    ///
+    /// Only the 64-byte Ed25519 signature leaves Rust; private key material remains inside
+    /// the Majik Key library and is zeroized there. The guarded path also honours explicit
+    /// signing sessions and the one-time-unlock preference.
+    pub fn sign_solana_message(
+        &mut self,
+        message: &[u8],
+        account_id: Option<&str>,
+    ) -> Result<Vec<u8>> {
+        let result = self
+            .with_signing_key(account_id, false, |key| {
+                let web3 = key.web3().ok_or_else(|| {
+                    SignatureClientError::Invalid(
+                        "This account does not expose a Majik Key Solana signer.".into(),
+                    )
+                })?;
+                let signature = web3.solana.sign(message);
+                if signature.len() != 64 {
+                    return Err(SignatureClientError::Invalid(
+                        "Majik Key returned an invalid Solana signature length.".into(),
+                    ));
+                }
+                Ok(signature)
+            })
+            .map(|(signature, _)| signature);
+        self.report("signSolanaMessage", result)
+    }
+
     /// Public signing keys of an unlocked-or-not own account.
     pub fn get_signing_public_keys(
         &self,
