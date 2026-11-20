@@ -64,6 +64,7 @@ pub struct SignDetachedFileOptions {
     pub message: Option<String>,
     pub tsa: Option<MajikTimestamp>,
     pub save_history: Option<bool>,
+    pub session_context_hash: Option<String>,
 }
 
 impl SignDetachedFileOptions {
@@ -81,6 +82,7 @@ impl SignDetachedFileOptions {
             prior_file: self.prior_file.clone(),
             message: self.message.clone(),
             tsa: self.tsa.clone(),
+            session_context_hash: self.session_context_hash.clone(),
         }
     }
 }

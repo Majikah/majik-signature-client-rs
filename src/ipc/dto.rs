@@ -182,6 +182,8 @@ pub struct SignDetachedOptionsDto {
     pub tsa: Option<MajikTimestamp>,
     #[serde(default)]
     pub save_history: Option<bool>,
+    #[serde(default)]
+    pub session_context_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

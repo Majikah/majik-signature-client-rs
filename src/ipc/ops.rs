@@ -460,6 +460,7 @@ fn detached_options(
         message: dto.message.clone(),
         tsa: dto.tsa.clone(),
         save_history: dto.save_history,
+        session_context_hash: dto.session_context_hash.clone(),
     })
 }
 
