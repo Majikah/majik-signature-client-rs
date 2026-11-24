@@ -228,6 +228,67 @@ pub struct SignSessionFileArgs {
     pub ctx: CtxDto,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignRoomPublicEncryptionIdentityDto {
+    pub fingerprint: String,
+    pub public_key: String,
+    pub ml_kem_public_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignRoomPublicRecipientDto {
+    pub fingerprint: String,
+    pub public_key: String,
+    pub ml_kem_public_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptSignRoomFileArgs {
+    pub input: FileInput,
+    pub owner: SignRoomPublicEncryptionIdentityDto,
+    #[serde(default)]
+    pub recipients: Vec<SignRoomPublicRecipientDto>,
+    #[serde(default)]
+    pub output: Option<OutputTarget>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptSignRoomFileDto {
+    pub file: BytesOutput,
+    pub content_hash: String,
+    pub original_name: String,
+    pub content_type: String,
+    pub size_bytes: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecryptSignRoomFileArgs {
+    pub input: FileInput,
+    pub account_id: String,
+    pub expected_original_name: String,
+    pub expected_content_type: String,
+    pub expected_size_bytes: usize,
+    pub expected_content_hash: String,
+    #[serde(default)]
+    pub output: Option<OutputTarget>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecryptSignRoomFileDto {
+    pub file: BytesOutput,
+    pub original_name: String,
+    pub content_type: String,
+    pub size_bytes: usize,
+    pub content_hash: String,
+}
+
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SignFileArgs {

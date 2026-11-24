@@ -16,6 +16,13 @@ use majik_signature::{
     SignatoriesResult, SignatoryInfo, VerificationResult,
 };
 use serde::Serialize;
+use base64::engine::general_purpose::STANDARD as BASE64;
+use base64::Engine as _;
+use majik_file::{
+    MajikFile, MajikFileCreateOptions, MajikFileDecryptIdentity,
+    MajikFileEncryptionIdentity, MajikFileRecipient,
+};
+use sha2::{Digest, Sha256};
 
 use super::dto::*;
 use super::input::{
@@ -29,6 +36,7 @@ use crate::logs::{HistoryLog, HistorySource, UserActivityLog};
 use crate::mjks::{CosignOptions, MjksMapInput, OrderCheckOptions};
 use crate::prefs::UserAppPreferences;
 use crate::signing::{SigInput, SignatureMetadata, SignerRef, VerifyResult};
+use crate::file_identity::identity_from_key;
 use crate::stamps::{StampAssetKind, StampMeta};
 
 fn invalid(msg: impl Into<String>) -> SignatureClientError {
@@ -498,6 +506,169 @@ pub fn sign_file_detached(
         signature: r.signature.to_json(),
         handler: r.handler,
         mime_type: r.mime_type,
+    })
+}
+
+const SIGNROOM_MAX_PLAINTEXT_BYTES: usize = 25 * 1024 * 1024;
+const SIGNROOM_MAX_MJKB_BYTES: usize = 26 * 1024 * 1024;
+
+fn decode_signroom_mlkem_public_key(value: &str, field: &str) -> Result<Vec<u8>> {
+    if value.trim().is_empty() {
+        return Err(invalid(format!("{field} is required")));
+    }
+    let decoded = BASE64
+        .decode(value.trim())
+        .map_err(|_| invalid(format!("{field} must be valid Base64")))?;
+    if decoded.len() != 1184 {
+        return Err(invalid(format!("{field} must decode to a 1184-byte ML-KEM-768 public key")));
+    }
+    Ok(decoded)
+}
+
+fn signroom_plaintext_content_hash(bytes: &[u8], mime_type: &str) -> Result<String> {
+    let canonical = MajikSignature::strip_from(bytes, Some(mime_type))
+        .map_err(|error| invalid(error.to_string()))?;
+    Ok(BASE64.encode(Sha256::digest(&canonical)))
+}
+
+/// Encrypt a document for the issuer and session-pinned recipients using public keys only.
+pub fn encrypt_signroom_file(a: EncryptSignRoomFileArgs) -> Result<EncryptSignRoomFileDto> {
+    let input = a.input.load()?;
+    if input.bytes.is_empty() || input.bytes.len() > SIGNROOM_MAX_PLAINTEXT_BYTES {
+        return Err(invalid("A SignRoom plaintext document must be between 1 byte and 25 MiB"));
+    }
+    let original_name = input
+        .name
+        .filter(|name| !name.trim().is_empty())
+        .ok_or_else(|| invalid("A SignRoom source filename is required"))?;
+    let content_type = input
+        .mime_type
+        .filter(|mime| !mime.trim().is_empty())
+        .ok_or_else(|| invalid("A normalized SignRoom document MIME type is required"))?;
+
+    if a.owner.fingerprint.trim().is_empty() || a.owner.public_key.trim().is_empty() {
+        return Err(invalid("The pinned SignRoom owner identity is incomplete"));
+    }
+    let owner = MajikFileEncryptionIdentity {
+        public_key: a.owner.public_key,
+        fingerprint: a.owner.fingerprint.clone(),
+        ml_kem_public_key: decode_signroom_mlkem_public_key(
+            &a.owner.ml_kem_public_key,
+            "owner.mlKemPublicKey",
+        )?,
+    };
+    let recipients = a
+        .recipients
+        .into_iter()
+        .map(|recipient| {
+            if recipient.fingerprint.trim().is_empty() || recipient.public_key.trim().is_empty() {
+                return Err(invalid("A pinned SignRoom recipient identity is incomplete"));
+            }
+            Ok(MajikFileRecipient {
+                fingerprint: recipient.fingerprint,
+                public_key: recipient.public_key,
+                ml_kem_public_key: decode_signroom_mlkem_public_key(
+                    &recipient.ml_kem_public_key,
+                    "recipient.mlKemPublicKey",
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let content_hash = signroom_plaintext_content_hash(&input.bytes, &content_type)?;
+    let mut create = MajikFileCreateOptions::new(input.bytes, owner.fingerprint.clone(), owner);
+    create.recipients = recipients;
+    create.original_name = Some(original_name.clone());
+    create.mime_type = Some(content_type.clone());
+
+    let encrypted = MajikFile::create(create)
+        .map_err(|error| invalid(error.to_string()))?;
+    let bytes = encrypted.to_mjkb()
+        .map_err(|error| invalid(error.to_string()))?
+        .to_vec();
+    if bytes.is_empty() || bytes.len() > SIGNROOM_MAX_MJKB_BYTES {
+        return Err(invalid("The encrypted SignRoom MJKB container exceeds 26 MiB"));
+    }
+
+    let size_bytes = bytes.len();
+    let file = deliver(bytes, a.output.as_ref())?;
+    Ok(EncryptSignRoomFileDto {
+        file,
+        content_hash,
+        original_name,
+        content_type,
+        size_bytes,
+    })
+}
+
+/// Decrypt MJKB inside the native client and verify all server-pinned plaintext fields.
+pub fn decrypt_signroom_file(
+    c: &mut SignatureClient,
+    a: DecryptSignRoomFileArgs,
+) -> Result<DecryptSignRoomFileDto> {
+    let input = a.input.load()?;
+    if input.bytes.is_empty() || input.bytes.len() > SIGNROOM_MAX_MJKB_BYTES {
+        return Err(invalid("The SignRoom MJKB container must be between 1 byte and 26 MiB"));
+    }
+    if a.account_id.trim().is_empty() {
+        return Err(invalid("A local Majik Key account is required to decrypt this SignRoom file"));
+    }
+    if a.expected_original_name.trim().is_empty()
+        || a.expected_content_type.trim().is_empty()
+        || a.expected_content_hash.trim().is_empty()
+    {
+        return Err(invalid("The expected SignRoom plaintext metadata is incomplete"));
+    }
+
+    let expected_original_name = a.expected_original_name;
+    let expected_content_type = a.expected_content_type;
+    let expected_size_bytes = a.expected_size_bytes;
+    let expected_content_hash = a.expected_content_hash;
+
+    let result = c.with_signing_key(Some(&a.account_id), false, |key| {
+        let identity = identity_from_key(key)?;
+        let decrypted = MajikFile::decrypt_with_metadata_from(
+            &input.bytes,
+            MajikFileDecryptIdentity::from(&identity),
+            None,
+            None,
+        )
+        .map_err(|error| invalid(error.to_string()))?;
+
+        let original_name = decrypted
+            .original_name
+            .ok_or_else(|| invalid("The MJKB container is missing its original filename"))?;
+        let content_type = decrypted
+            .mime_type
+            .ok_or_else(|| invalid("The MJKB container is missing its original MIME type"))?;
+        if original_name != expected_original_name {
+            return Err(invalid("The decrypted filename does not match the SignRoom session record"));
+        }
+        if content_type != expected_content_type {
+            return Err(invalid("The decrypted MIME type does not match the SignRoom session record"));
+        }
+        if decrypted.bytes.len() != expected_size_bytes
+            || decrypted.bytes.len() > SIGNROOM_MAX_PLAINTEXT_BYTES
+        {
+            return Err(invalid("The decrypted document size does not match the SignRoom session record"));
+        }
+        let content_hash = signroom_plaintext_content_hash(&decrypted.bytes, &content_type)?;
+        if content_hash != expected_content_hash {
+            return Err(invalid("The decrypted document does not match the SignRoom plaintext content commitment"));
+        }
+
+        Ok((decrypted.bytes, original_name, content_type, content_hash))
+    });
+    let ((bytes, original_name, content_type, content_hash), _) =
+        c.report("decryptSignRoomFile", result)?;
+    let size_bytes = bytes.len();
+    let file = deliver(bytes, a.output.as_ref())?;
+    Ok(DecryptSignRoomFileDto {
+        file,
+        original_name,
+        content_type,
+        size_bytes,
+        content_hash,
     })
 }
 
