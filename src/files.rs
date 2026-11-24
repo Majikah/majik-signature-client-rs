@@ -207,7 +207,7 @@ impl SignatureClient {
         note.tsa = result.signature.has_tsa();
         note.signer_count = Some(result.envelope.signatures().len() as u32);
         let envelope = sctx.identity.as_ref().map(|identity| LogEnvelope {
-            data: result.mjksig.clone(),
+            data: result.blob.clone(),
             identity: identity.clone(),
         });
         self.note_history(Some(&sctx.fingerprint), note, &digest, envelope);
