@@ -11,6 +11,7 @@ use majik_key_client::ipc::Snapshot;
 use majik_signature::{
     BatchFileInput, BatchSignMode, BatchSignOptions, BatchSignResult, BatchVerifyInput,
     EnvelopeInfo, EnvelopeInput, ExpectedSigner, MajikChainAnchor, MajikSignature,
+    MajikSessionSigningContext, SessionFileSignOptions,
     MajikSignatureJSON, MajikTimestamp, SealInfo, SignOptions, SignatoriesFilter,
     SignatoriesResult, SignatoryInfo, VerificationResult,
 };
@@ -497,6 +498,49 @@ pub fn sign_file_detached(
         signature: r.signature.to_json(),
         handler: r.handler,
         mime_type: r.mime_type,
+    })
+}
+
+/// Sign a detached SignRoom document and return its session-bound signature JSON.
+pub fn sign_session_file(
+    c: &mut SignatureClient,
+    a: SignSessionFileArgs,
+) -> Result<SessionSignedDto> {
+    let file = a.input.load()?;
+    let dto = a.options;
+
+    let existing_envelope = match &dto.existing_envelope {
+        Some(input) => Some(EnvelopeInput::Bytes(input.load()?.bytes)),
+        None => None,
+    };
+    let prior_file = match &dto.prior_file {
+        Some(input) => Some(input.load()?.bytes),
+        None => None,
+    };
+
+    let options = SessionFileSignOptions {
+        session_context: MajikSessionSigningContext {
+            session_id: dto.session_context.session_id,
+            challenge_id: dto.session_context.challenge_id,
+            policy_hash: dto.session_context.policy_hash,
+        },
+        content_type: dto.content_type,
+        timestamp: dto.timestamp,
+        mime_type: dto.mime_type.or(file.mime_type),
+        expected_signers: signers(c, &dto.expected_signers)?,
+        valid_until: dto.valid_until,
+        existing_envelope,
+        tsa: None,
+        file_version: dto.file_version,
+        prior_file,
+        message: dto.message,
+    };
+
+    let result = c.sign_session_file(&file.bytes, &options, &a.ctx.to_ctx())?;
+    Ok(SessionSignedDto {
+        signature: result.signature.to_json(),
+        handler: result.handler,
+        mime_type: result.mime_type,
     })
 }
 

@@ -7,6 +7,7 @@ use majik_signature::{
     FileChainVerification, MajikSignature, MajikSignatureEnvelope, MajikSignatureError,
     MajikSignerPublicKeys, MajikTimestamp, RevisionSetVerification, SealInfo, SealResult,
     SignAndEmbedOptions, SignAndEmbedResult, SignDetachedOptions, SignDetachedResult,
+    SessionFileSignOptions, SessionFileSignResult,
     SignatoriesFilter, SignatoriesResult, SignatoryInfo, VerificationResult, VerifyFileOptions,
     VerifyRevisionsOptions,
 };
@@ -171,6 +172,45 @@ impl SignatureClient {
         });
         let (result, sctx) = self.report("signFileDetached", signed)?;
         self.after_detached_sign(&result, &sctx, want_envelope, ctx.source);
+        Ok(result)
+    }
+
+    /// Sign one detached document using the authoritative SignRoom challenge context.
+    ///
+    /// The low-level SDK validates and commits the session context and optional revision chain.
+    /// Challenge issuance, participant authorization and challenge consumption remain server duties.
+    pub fn sign_session_file(
+        &mut self,
+        file: &[u8],
+        options: &SessionFileSignOptions,
+        ctx: &OpContext,
+    ) -> Result<SessionFileSignResult> {
+        let signed = self.with_signing_key(ctx.account_id.as_deref(), true, |key| {
+            Ok(MajikSignature::sign_session_file(file, key, options)?)
+        });
+        let (result, sctx) = self.report("signSessionFile", signed)?;
+
+        let sign_result = SignResult {
+            signature: result.signature.clone(),
+            signer_id: result.signature.signer_id().to_string(),
+            content_hash: result.signature.content_hash().to_string(),
+            timestamp: result.signature.timestamp().to_string(),
+            content_type: result.signature.content_type().map(str::to_string),
+        };
+        self.emit(SigOnlyEvent::Sign(Box::new(SignEventPayload::from(
+            &sign_result,
+        ))));
+
+        let digest = sign_result.content_hash.clone();
+        let mut note = OpNote::new(&digest, HistoryType::Sign, ctx.source);
+        note.detached = true;
+        note.tsa = result.signature.has_tsa();
+        note.signer_count = Some(result.envelope.signatures().len() as u32);
+        let envelope = sctx.identity.as_ref().map(|identity| LogEnvelope {
+            data: result.mjksig.clone(),
+            identity: identity.clone(),
+        });
+        self.note_history(Some(&sctx.fingerprint), note, &digest, envelope);
         Ok(result)
     }
 
