@@ -6,10 +6,9 @@ use majik_signature::{
     CanSignResult, EmbedOptions, EnvelopeInfo, EnvelopeInput, ExpectedSigner,
     FileChainVerification, MajikSignature, MajikSignatureEnvelope, MajikSignatureError,
     MajikSignerPublicKeys, MajikTimestamp, RevisionSetVerification, SealInfo, SealResult,
-    SignAndEmbedOptions, SignAndEmbedResult, SignDetachedOptions, SignDetachedResult,
-    SessionFileSignOptions, SessionFileSignResult,
-    SignatoriesFilter, SignatoriesResult, SignatoryInfo, VerificationResult, VerifyFileOptions,
-    VerifyRevisionsOptions,
+    SessionFileSignOptions, SessionFileSignResult, SignAndEmbedOptions, SignAndEmbedResult,
+    SignDetachedOptions, SignDetachedResult, SignatoriesFilter, SignatoriesResult, SignatoryInfo,
+    VerificationResult, VerifyFileOptions, VerifyRevisionsOptions,
 };
 
 use crate::client::SignatureClient;
