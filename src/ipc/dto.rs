@@ -146,7 +146,7 @@ pub struct SignFileOptionsDto {
     #[serde(default)]
     pub mime_type: Option<String>,
     #[serde(default)]
-    pub expected_signers: Option<Vec<ExpectedSigner>>,
+    pub expected_signers: Option<Vec<SignerRefDto>>,
     #[serde(default)]
     pub valid_until: Option<String>,
     #[serde(default)]
