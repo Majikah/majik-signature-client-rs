@@ -20,6 +20,7 @@ use crate::logs::HistorySource;
 use crate::prefs::UserAppPreferences;
 use crate::signing::{OpContext, SignerRef, VerifyTarget};
 use crate::stamps::{StampAssetKind, StampMeta};
+use majik_signature::FileVersion;
 
 // ─── Shared args ─────────────────────────────────────────────────────────────
 
@@ -184,6 +185,107 @@ pub struct SignDetachedOptionsDto {
     pub save_history: Option<bool>,
     #[serde(default)]
     pub session_context_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionSigningContextDto {
+    pub session_id: String,
+    pub challenge_id: String,
+    pub policy_hash: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignSessionFileOptionsDto {
+    pub session_context: SessionSigningContextDto,
+    #[serde(default)]
+    pub content_type: Option<String>,
+    #[serde(default)]
+    pub timestamp: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub expected_signers: Option<Vec<SignerRefDto>>,
+    #[serde(default)]
+    pub valid_until: Option<String>,
+    #[serde(default)]
+    pub existing_envelope: Option<FileInput>,
+    #[serde(default)]
+    pub file_version: Option<FileVersion>,
+    #[serde(default)]
+    pub prior_file: Option<FileInput>,
+    #[serde(default)]
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignSessionFileArgs {
+    pub input: FileInput,
+    pub options: SignSessionFileOptionsDto,
+    #[serde(default)]
+    pub ctx: CtxDto,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignRoomPublicEncryptionIdentityDto {
+    pub fingerprint: String,
+    pub public_key: String,
+    pub ml_kem_public_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignRoomPublicRecipientDto {
+    pub fingerprint: String,
+    pub public_key: String,
+    pub ml_kem_public_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptSignRoomFileArgs {
+    pub input: FileInput,
+    pub owner: SignRoomPublicEncryptionIdentityDto,
+    #[serde(default)]
+    pub recipients: Vec<SignRoomPublicRecipientDto>,
+    #[serde(default)]
+    pub output: Option<OutputTarget>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptSignRoomFileDto {
+    pub file: BytesOutput,
+    pub content_hash: String,
+    pub original_name: String,
+    pub content_type: String,
+    pub size_bytes: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecryptSignRoomFileArgs {
+    pub input: FileInput,
+    pub account_id: String,
+    pub expected_original_name: String,
+    pub expected_content_type: String,
+    pub expected_size_bytes: usize,
+    pub expected_content_hash: String,
+    #[serde(default)]
+    pub output: Option<OutputTarget>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DecryptSignRoomFileDto {
+    pub file: BytesOutput,
+    pub original_name: String,
+    pub content_type: String,
+    pub size_bytes: usize,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -438,6 +540,14 @@ pub struct SignedFileDto {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SessionSignedDto {
+    pub signature: MajikSignatureJSON,
+    pub handler: String,
+    pub mime_type: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DetachedSignedDto {
     pub envelope: BytesOutput,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -651,3 +761,38 @@ fn yes() -> bool {
 }
 
 pub type ContactMeta = MajikContactMeta;
+
+#[cfg(test)]
+mod signroom_dto_tests {
+    use super::*;
+
+    #[test]
+    fn sign_session_file_options_deserialize_camel_case_context_and_file_version() {
+        let value = serde_json::json!({
+            "sessionContext": {
+                "sessionId": "session-123",
+                "challengeId": "challenge-123",
+                "policyHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+            },
+            "fileVersion": {
+                "version": 1,
+                "timestamp": "2026-11-25T00:00:00.000Z",
+                "contentHash": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "createdBy": "fingerprint-123"
+            },
+            "expectedSigners": [{
+                "signerId": "fingerprint-123",
+                "edPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+                "mlDsaPublicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+            }]
+        });
+        let dto: SignSessionFileOptionsDto = serde_json::from_value(value).unwrap();
+        assert_eq!(dto.session_context.session_id, "session-123");
+        assert_eq!(dto.session_context.challenge_id, "challenge-123");
+        assert_eq!(dto.file_version.as_ref().unwrap().version, 1);
+        assert_eq!(
+            dto.file_version.as_ref().unwrap().created_by.as_deref(),
+            Some("fingerprint-123")
+        );
+    }
+}
