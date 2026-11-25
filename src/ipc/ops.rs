@@ -437,7 +437,7 @@ fn sign_file_options(
         content_type: dto.content_type.clone(),
         timestamp: dto.timestamp.clone(),
         mime_type: dto.mime_type.clone().or(file_mime.map(str::to_string)),
-        expected_signers: dto.expected_signers,
+        expected_signers: signers(c, &dto.expected_signers)?,
         valid_until: dto.valid_until.clone(),
         prior_signed_file: prior,
         message: dto.message.clone(),
