@@ -14,13 +14,13 @@ use majik_signature::{
 use serde::{Deserialize, Serialize};
 
 use super::input::{BytesOutput, FileInput, OutputTarget};
-use majik_signature::FileVersion;
 use crate::client::SignatureClient;
 use crate::error::{Result, SignatureClientError};
 use crate::logs::HistorySource;
 use crate::prefs::UserAppPreferences;
 use crate::signing::{OpContext, SignerRef, VerifyTarget};
 use crate::stamps::{StampAssetKind, StampMeta};
+use majik_signature::FileVersion;
 
 // ─── Shared args ─────────────────────────────────────────────────────────────
 
@@ -287,7 +287,6 @@ pub struct DecryptSignRoomFileDto {
     pub size_bytes: usize,
     pub content_hash: String,
 }
-
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
