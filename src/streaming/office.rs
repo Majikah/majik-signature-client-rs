@@ -377,118 +377,127 @@ fn copy_staged_entry(source: &Path, output: &mut File, expected_size: u64) -> Re
     Ok(())
 }
 
-fn write_archive_entry(
-    output: &mut File,
-    central: &mut File,
-    output_position: &mut u64,
-    central_size: &mut u64,
-    name: &str,
-    path: Option<&Path>,
-    bytes: Option<&[u8]>,
-    size: u64,
-    crc: u32,
+struct ZipArchiveWriter<'a> {
+    output: &'a mut File,
+    central: &'a mut File,
+    output_position: u64,
+    central_size: u64,
     dos_time: u16,
     dos_date: u16,
-) -> Result<()> {
-    let name_bytes = name.as_bytes();
-    if name_bytes.len() > u16::MAX as usize {
-        return Err(file_error(
-            "fileTooLarge",
-            "Office ZIP entry name exceeds 65,535 bytes.",
-        ));
-    }
-    let utf16_len = name.encode_utf16().count();
-    let flags_hi: u8 = if name_bytes.len() != utf16_len { 8 } else { 0 };
-    let local_offset = u32::try_from(*output_position).map_err(|_| {
-        file_error(
-            "fileTooLarge",
-            "Canonical Office ZIP exceeds the 32-bit local-header offset limit.",
-        )
-    })?;
-    let size32 = u32::try_from(size).map_err(|_| {
-        file_error(
-            "fileTooLarge",
-            "An Office ZIP entry exceeds the 32-bit stored-size limit.",
-        )
-    })?;
+}
 
-    write_u32(output, 0x0403_4b50)?;
-    write_u16(output, 20)?;
-    output.write_all(&[0, flags_hi]).map_err(|error| {
-        SignatureClientError::Invalid(format!("Could not write canonical Office ZIP: {error}"))
-    })?;
-    write_u16(output, 0)?;
-    write_u16(output, dos_time)?;
-    write_u16(output, dos_date)?;
-    write_u32(output, crc)?;
-    write_u32(output, size32)?;
-    write_u32(output, size32)?;
-    write_u16(output, name_bytes.len() as u16)?;
-    write_u16(output, 0)?;
-    output.write_all(name_bytes).map_err(|error| {
-        SignatureClientError::Invalid(format!("Could not write canonical Office ZIP: {error}"))
-    })?;
-
-    *output_position = (*output_position)
-        .checked_add(30 + name_bytes.len() as u64)
-        .ok_or_else(|| file_error("fileTooLarge", "Canonical Office ZIP size overflowed."))?;
-    if let Some(path) = path {
-        copy_staged_entry(path, output, size)?;
-    } else if let Some(data) = bytes {
-        output.write_all(data).map_err(|error| {
-            SignatureClientError::Invalid(format!("Could not write canonical Office ZIP: {error}"))
-        })?;
-    }
-    *output_position = output_position
-        .checked_add(size)
-        .ok_or_else(|| file_error("fileTooLarge", "Canonical Office ZIP size overflowed."))?;
-
-    write_u32(central, 0x0201_4b50)?;
-    central.write_all(&[20, 0]).map_err(|error| {
-        SignatureClientError::Invalid(format!(
-            "Could not write Office ZIP central directory: {error}"
-        ))
-    })?;
-    write_u16(central, 20)?;
-    central.write_all(&[0, flags_hi]).map_err(|error| {
-        SignatureClientError::Invalid(format!(
-            "Could not write Office ZIP central directory: {error}"
-        ))
-    })?;
-    write_u16(central, 0)?;
-    write_u16(central, dos_time)?;
-    write_u16(central, dos_date)?;
-    write_u32(central, crc)?;
-    write_u32(central, size32)?;
-    write_u32(central, size32)?;
-    write_u16(central, name_bytes.len() as u16)?;
-    write_u16(central, 0)?;
-    write_u16(central, 0)?;
-    write_u16(central, 0)?;
-    write_u16(central, 0)?;
-    write_u32(central, 0)?;
-    write_u32(central, local_offset)?;
-    central.write_all(name_bytes).map_err(|error| {
-        SignatureClientError::Invalid(format!(
-            "Could not write Office ZIP central directory: {error}"
-        ))
-    })?;
-
-    *central_size = (*central_size)
-        .checked_add(46 + name_bytes.len() as u64)
-        .ok_or_else(|| {
+impl ZipArchiveWriter<'_> {
+    fn write_entry(
+        &mut self,
+        name: &str,
+        path: Option<&Path>,
+        bytes: Option<&[u8]>,
+        size: u64,
+        crc: u32,
+    ) -> Result<()> {
+        let name_bytes = name.as_bytes();
+        if name_bytes.len() > u16::MAX as usize {
+            return Err(file_error(
+                "fileTooLarge",
+                "Office ZIP entry name exceeds 65,535 bytes.",
+            ));
+        }
+        let utf16_len = name.encode_utf16().count();
+        let flags_hi: u8 = if name_bytes.len() != utf16_len { 8 } else { 0 };
+        let local_offset = u32::try_from(self.output_position).map_err(|_| {
             file_error(
                 "fileTooLarge",
-                "Office ZIP central directory size overflowed.",
+                "Canonical Office ZIP exceeds the 32-bit local-header offset limit.",
             )
         })?;
-    if *central_size > MAX_CENTRAL_DIRECTORY_BYTES {
-        return Err(file_error(
-            "fileTooLarge",
-            "Office ZIP central directory exceeds the 32 MiB metadata safety limit.",
-        ));
+        let size32 = u32::try_from(size).map_err(|_| {
+            file_error(
+                "fileTooLarge",
+                "An Office ZIP entry exceeds the 32-bit stored-size limit.",
+            )
+        })?;
+
+        write_u32(self.output, 0x0403_4b50)?;
+        write_u16(self.output, 20)?;
+        self.output.write_all(&[0, flags_hi]).map_err(|error| {
+            SignatureClientError::Invalid(format!("Could not write canonical Office ZIP: {error}"))
+        })?;
+        write_u16(self.output, 0)?;
+        write_u16(self.output, self.dos_time)?;
+        write_u16(self.output, self.dos_date)?;
+        write_u32(self.output, crc)?;
+        write_u32(self.output, size32)?;
+        write_u32(self.output, size32)?;
+        write_u16(self.output, name_bytes.len() as u16)?;
+        write_u16(self.output, 0)?;
+        self.output.write_all(name_bytes).map_err(|error| {
+            SignatureClientError::Invalid(format!("Could not write canonical Office ZIP: {error}"))
+        })?;
+
+        self.output_position = self
+            .output_position
+            .checked_add(30 + name_bytes.len() as u64)
+            .ok_or_else(|| file_error("fileTooLarge", "Canonical Office ZIP size overflowed."))?;
+        if let Some(path) = path {
+            copy_staged_entry(path, self.output, size)?;
+        } else if let Some(data) = bytes {
+            self.output.write_all(data).map_err(|error| {
+                SignatureClientError::Invalid(format!("Could not write canonical Office ZIP: {error}"))
+            })?;
+        }
+        self.output_position = self
+            .output_position
+            .checked_add(size)
+            .ok_or_else(|| file_error("fileTooLarge", "Canonical Office ZIP size overflowed."))?;
+
+        write_u32(self.central, 0x0201_4b50)?;
+        self.central.write_all(&[20, 0]).map_err(|error| {
+            SignatureClientError::Invalid(format!(
+                "Could not write Office ZIP central directory: {error}"
+            ))
+        })?;
+        write_u16(self.central, 20)?;
+        self.central.write_all(&[0, flags_hi]).map_err(|error| {
+            SignatureClientError::Invalid(format!(
+                "Could not write Office ZIP central directory: {error}"
+            ))
+        })?;
+        write_u16(self.central, 0)?;
+        write_u16(self.central, self.dos_time)?;
+        write_u16(self.central, self.dos_date)?;
+        write_u32(self.central, crc)?;
+        write_u32(self.central, size32)?;
+        write_u32(self.central, size32)?;
+        write_u16(self.central, name_bytes.len() as u16)?;
+        write_u16(self.central, 0)?;
+        write_u16(self.central, 0)?;
+        write_u16(self.central, 0)?;
+        write_u16(self.central, 0)?;
+        write_u32(self.central, 0)?;
+        write_u32(self.central, local_offset)?;
+        self.central.write_all(name_bytes).map_err(|error| {
+            SignatureClientError::Invalid(format!(
+                "Could not write Office ZIP central directory: {error}"
+            ))
+        })?;
+
+        self.central_size = self
+            .central_size
+            .checked_add(46 + name_bytes.len() as u64)
+            .ok_or_else(|| {
+                file_error(
+                    "fileTooLarge",
+                    "Office ZIP central directory size overflowed.",
+                )
+            })?;
+        if self.central_size > MAX_CENTRAL_DIRECTORY_BYTES {
+            return Err(file_error(
+                "fileTooLarge",
+                "Office ZIP central directory exceeds the 32 MiB metadata safety limit.",
+            ));
+        }
+        Ok(())
     }
-    Ok(())
 }
 
 fn write_stored_archive(
@@ -520,22 +529,16 @@ fn write_stored_archive(
         .seek(SeekFrom::Start(0))
         .map_err(|error| io_file_error("fileWriteFailed", Path::new("<output>"), error))?;
 
-    let mut output_position = 0u64;
-    let mut central_size = 0u64;
+    let mut writer = ZipArchiveWriter {
+        output,
+        central: &mut central,
+        output_position: 0,
+        central_size: 0,
+        dos_time,
+        dos_date,
+    };
     for entry in entries {
-        write_archive_entry(
-            output,
-            &mut central,
-            &mut output_position,
-            &mut central_size,
-            &entry.name,
-            Some(&entry.path),
-            None,
-            entry.size,
-            entry.crc32,
-            dos_time,
-            dos_date,
-        )?;
+        writer.write_entry(&entry.name, Some(&entry.path), None, entry.size, entry.crc32)?;
     }
 
     if let Some(signature) = signature {
@@ -545,45 +548,42 @@ fn write_stored_archive(
                 "Majik Signature JSON entry exceeds the 8 MiB Office extraction limit.",
             ));
         }
-        write_archive_entry(
-            output,
-            &mut central,
-            &mut output_position,
-            &mut central_size,
+        writer.write_entry(
             OFFICE_ENTRY,
             None,
             Some(signature),
             signature.len() as u64,
             crc32(signature),
-            dos_time,
-            dos_date,
         )?;
     }
 
-    if output_position > u32::MAX as u64 || central_size > u32::MAX as u64 {
+    if writer.output_position > u32::MAX as u64 || writer.central_size > u32::MAX as u64 {
         return Err(file_error(
             "fileTooLarge",
             "Canonical Office ZIP exceeds the classic ZIP 32-bit size limit.",
         ));
     }
 
-    central
+    writer
+        .central
         .flush()
         .map_err(|error| io_file_error("fileWriteFailed", &central_path, error))?;
-    central
+    writer
+        .central
         .seek(SeekFrom::Start(0))
         .map_err(|error| io_file_error("fileUnreadable", &central_path, error))?;
 
-    let central_offset = output_position;
-    let copied = io::copy(&mut central, output)
+    let central_offset = writer.output_position;
+    let copied = io::copy(&mut *writer.central, &mut *writer.output)
         .map_err(|error| io_file_error("fileWriteFailed", &central_path, error))?;
-    if copied != central_size {
+    if copied != writer.central_size {
         return Err(file_error(
             "fileWriteFailed",
             "Office ZIP central directory was truncated while copying.",
         ));
     }
-    output_position = output_position
+    writer.output_position = writer
+        .output_position
         .checked_add(copied)
         .ok_or_else(|| file_error("fileTooLarge", "Canonical Office ZIP size overflowed."))?;
 
@@ -593,18 +593,19 @@ fn write_stored_archive(
             "Office ZIP has too many entries for its end record.",
         )
     })?;
-    write_u32(output, 0x0605_4b50)?;
-    write_u16(output, 0)?;
+    write_u32(writer.output, 0x0605_4b50)?;
+    write_u16(writer.output, 0)?;
     write_u16(output, 0)?;
     write_u16(output, count)?;
     write_u16(output, count)?;
     write_u32(output, central_size as u32)?;
     write_u32(output, central_offset as u32)?;
     write_u16(output, 0)?;
-    output_position = output_position
+    writer.output_position = writer
+        .output_position
         .checked_add(22)
         .ok_or_else(|| file_error("fileTooLarge", "Canonical Office ZIP size overflowed."))?;
-    Ok(output_position)
+    Ok(writer.output_position)
 }
 
 fn stage_archive(
