@@ -1017,7 +1017,7 @@ mod tests {
 
         let source_bytes = fs::read(&source_path).unwrap();
         let source = OpenedStreamFile::open(&source_path, Some(mime)).unwrap();
-        let plan = build_plan(&source).unwrap();
+        let plan = build_plan(&source, None).unwrap();
         assert_eq!(
             plan.office_archive.as_ref().unwrap().envelope_payload(),
             Some("old-signature")
@@ -1043,7 +1043,7 @@ mod tests {
         assert_eq!(stripped, expected);
 
         let signed_source = OpenedStreamFile::open(&signed_path, Some(mime)).unwrap();
-        let signed_plan = build_plan(&signed_source).unwrap();
+        let signed_plan = build_plan(&signed_source, None).unwrap();
         assert_eq!(
             signed_plan
                 .office_archive
