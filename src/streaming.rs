@@ -6,6 +6,8 @@
 //! base64. Container rewriting is currently implemented for PDF and ISO-BMFF (MP4/MOV): only
 //! the small container metadata is held in memory; media payloads are copied unchanged.
 
+mod media;
+
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -1181,9 +1183,10 @@ fn parse_mp4_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
 
 fn detect_stream_format(source: &OpenedStreamFile) -> Result<&'static str> {
     let mut file = source.try_clone_file()?;
-    let head_len = usize::try_from(source.length().min(12)).unwrap_or(12);
+    let head_len = usize::try_from(source.length().min(16)).unwrap_or(16);
     let head = read_exact_at(&mut file, 0, head_len, source.path())?;
     let mime = source.mime_type().unwrap_or_default();
+
     if head.starts_with(b"%PDF") || mime == "application/pdf" {
         return Ok("pdf");
     }
@@ -1196,8 +1199,13 @@ fn detect_stream_format(source: &OpenedStreamFile) -> Result<&'static str> {
     if mp4_mime || mp4_magic {
         return Ok("mp4");
     }
-    // These formats have specialised in-memory handlers in `majik-signature`. Treating an
-    // already-signed instance as opaque bytes would change canonical hashing semantics.
+
+    if let Some(format) = media::detect_format(source, &head) {
+        return Ok(format);
+    }
+
+    // Text and ZIP-based document formats retain specialised canonicalisation in the core
+    // library. Never hash these as opaque bytes: doing so would silently diverge from verify().
     let specialised_mime = mime.starts_with("text/")
         || matches!(
             mime,
@@ -1210,20 +1218,6 @@ fn detect_stream_format(source: &OpenedStreamFile) -> Result<&'static str> {
                 | "application/toml"
                 | "application/msix"
                 | "application/appx"
-                | "image/png"
-                | "image/jpeg"
-                | "image/jpg"
-                | "audio/flac"
-                | "audio/x-flac"
-                | "audio/mpeg"
-                | "audio/mp3"
-                | "audio/wav"
-                | "audio/wave"
-                | "audio/x-wav"
-                | "video/x-matroska"
-                | "audio/x-matroska"
-                | "video/webm"
-                | "audio/webm"
                 | "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 | "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 | "application/vnd.openxmlformats-officedocument.presentationml.presentation"
@@ -1233,22 +1227,21 @@ fn detect_stream_format(source: &OpenedStreamFile) -> Result<&'static str> {
                 | "application/vnd.oasis.opendocument.text"
                 | "application/vnd.oasis.opendocument.spreadsheet"
                 | "application/vnd.oasis.opendocument.presentation"
+                | "audio/wav"
+                | "audio/wave"
+                | "audio/x-wav"
         );
-    let specialised_magic = head.starts_with(b"\x89PNG\r\n\x1a\n")
-        || head.starts_with(&[0xff, 0xd8, 0xff])
-        || head.len() >= 2 && head[0] == 0xff && (head[1] & 0xe0) == 0xe0
-        || head.starts_with(b"fLaC")
-        || head.starts_with(b"ID3")
-        || head.starts_with(b"OggS")
-        || head.starts_with(b"RIFF") && head.len() >= 12 && &head[8..12] == b"WAVE"
-        || head.starts_with(b"\x1aE\xdf\xa3")
-        || head.starts_with(b"PK\x03\x04");
+    let specialised_magic = head.starts_with(b"PK\\x03\\x04")
+        || head.starts_with(b"RIFF") && head.len() >= 12 && &head[8..12] == b"WAVE";
     if specialised_mime || specialised_magic {
         return Err(SignatureClientError::Invalid(format!(
-            "Streaming operations do not yet support this specialised container handler (MIME: {}). Use the legacy in-memory API until the format has a streaming handler, or explicitly select application/octet-stream when signing literal raw bytes from a known-clean file.",
+            "Streaming operations do not yet support this specialised container handler (MIME: {}). Use the legacy in-memory API until its bounded-memory handler is available.",
             if mime.is_empty() { "unknown" } else { mime }
         )));
     }
+
+    // Matroska/WebM use the same universal trailer as the fallback handler in the core crate,
+    // so their media payload can be streamed unchanged by the generic trailer path.
     Ok("raw")
 }
 
@@ -1256,6 +1249,10 @@ fn build_rewrite_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     match detect_stream_format(source)? {
         "pdf" => parse_pdf_plan(source),
         "mp4" => parse_mp4_plan(source),
+        "png" | "jpeg" | "mp3" | "flac" => {
+            let format = detect_stream_format(source)?;
+            media::build_plan(source, format)
+        }
         _ => {
             let mut file = source.try_clone_file()?;
             let trailer = read_universal_trailer(&mut file, source.length(), source.path())?;
@@ -1279,6 +1276,7 @@ fn build_rewrite_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         }
     }
 }
+
 
 fn normalized_destination(path: &Path) -> Result<PathBuf> {
     if path.exists() {
@@ -1464,11 +1462,24 @@ fn pdf_or_mp4_output_replacement(plan: &RewritePlan, payload: &str) -> Result<Ve
                 embed_mp4_moov(&plan.canonical_replacement, payload)
             }
         }
+        "PNG" | "JPEG" | "MP3" | "FLAC" => {
+            media::output_replacement(plan, payload)?.ok_or_else(|| {
+                SignatureClientError::Invalid("The media streaming handler did not produce signature metadata".into())
+            })
+        }
+        "Fallback (Universal Trailer)" => {
+            let mut replacement = Vec::with_capacity(payload.len() + 16);
+            replacement.extend_from_slice(payload.as_bytes());
+            replacement.extend_from_slice(&(payload.len() as u64).to_le_bytes());
+            replacement.extend_from_slice(&UNIVERSAL_TRAILER_MAGIC);
+            Ok(replacement)
+        }
         _ => Err(SignatureClientError::Invalid(
-            "Embedded streaming is currently supported for PDF and MP4/MOV containers only".into(),
+            "Embedded streaming is not available for this specialised container handler".into(),
         )),
     }
 }
+
 
 fn sign_event_and_history(
     client: &mut SignatureClient,
@@ -1710,9 +1721,9 @@ impl SignatureClient {
             }
         }
         let plan = build_rewrite_plan(&source)?;
-        if plan.handler != "PDF" && plan.handler != "MP4/MOV" {
+        if !matches!(plan.handler, "PDF" | "MP4/MOV" | "PNG" | "JPEG" | "MP3" | "FLAC" | "Fallback (Universal Trailer)") {
             return Err(SignatureClientError::Invalid(
-                "Large-file embedded signing is currently supported for PDF and MP4/MOV. Use detached streaming signing for this format; other embedded handlers are being migrated to bounded-memory readers.".into(),
+                "Large-file embedded signing is currently supported for PDF, MP4/MOV, PNG, JPEG, MP3, FLAC, and universal-trailer formats. This specialised container is not yet supported by the streaming writer.".into(),
             ));
         }
         if plan.has_mp4_moov && !plan.mp4_moov_after_mdat {
@@ -1850,9 +1861,9 @@ impl SignatureClient {
             }
         }
         let plan = build_rewrite_plan(&file)?;
-        if plan.handler != "PDF" && plan.handler != "MP4/MOV" {
+        if !matches!(plan.handler, "PDF" | "MP4/MOV" | "PNG" | "JPEG" | "MP3" | "FLAC" | "Fallback (Universal Trailer)") {
             return Err(SignatureClientError::Invalid(
-                "Embedded streaming verification is currently supported for PDF and MP4/MOV only"
+                "Embedded streaming verification is not available for this specialised container"
                     .into(),
             ));
         }
