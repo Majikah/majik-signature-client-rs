@@ -365,11 +365,6 @@ fn parse_jpeg_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
             })?;
             let data = read_at(source, offset + 4, data_len)?;
             if data.starts_with(JPEG_MAJIK_IDENTIFIER) {
-                if offset != 2 {
-                    return Err(SignatureClientError::Invalid(
-                        "Existing JPEG Majik APP15 segment is not immediately after SOI".into(),
-                    ));
-                }
                 if signature.is_some() {
                     return Err(SignatureClientError::Invalid(
                         "JPEG contains duplicate Majik APP15 segments".into(),
