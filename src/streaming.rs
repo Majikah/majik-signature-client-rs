@@ -1319,7 +1319,6 @@ fn build_rewrite_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
                     .to_string(),
                 has_mp4_moov: false,
                 mp4_moov_after_mdat: false,
-        riff_size_patch: None,
                 riff_size_patch: None,
             })
         }
@@ -2279,7 +2278,7 @@ mod tests {
             mime_type: "application/octet-stream".to_string(),
             has_mp4_moov: false,
             mp4_moov_after_mdat: false,
-        riff_size_patch: None,
+            riff_size_patch: None,
         };
         let mut reader = RewrittenFileReader::new(file, &plan).unwrap();
         let mut result = Vec::new();
