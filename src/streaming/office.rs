@@ -361,16 +361,46 @@ fn write_u32(output: &mut impl Write, value: u32) -> Result<()> {
     })
 }
 
-fn copy_staged_entry(source: &Path, output: &mut File, expected_size: u64) -> Result<()> {
+fn copy_staged_entry(
+    source: &Path,
+    output: &mut File,
+    expected_size: u64,
+    expected_crc32: u32,
+) -> Result<()> {
     let mut input =
         File::open(source).map_err(|error| io_file_error("fileUnreadable", source, error))?;
-    let copied = io::copy(&mut input, output)
-        .map_err(|error| io_file_error("fileWriteFailed", source, error))?;
-    if copied != expected_size {
+    let mut buffer = [0u8; 64 * 1024];
+    let mut copied = 0u64;
+    let mut crc_state = !0u32;
+    loop {
+        let count = input
+            .read(&mut buffer)
+            .map_err(|error| io_file_error("fileUnreadable", source, error))?;
+        if count == 0 {
+            break;
+        }
+        copied = copied.checked_add(count as u64).ok_or_else(|| {
+            file_error("fileChanged", "A staged Office ZIP entry size overflowed while copying.")
+        })?;
+        if copied > expected_size {
+            return Err(file_error(
+                "fileChanged",
+                format!(
+                    "A staged Office ZIP entry grew while being written (expected {expected_size}, copied at least {copied})."
+                ),
+            ));
+        }
+        crc_state = update_crc32(crc_state, &buffer[..count]);
+        output
+            .write_all(&buffer[..count])
+            .map_err(|error| io_file_error("fileWriteFailed", source, error))?;
+    }
+    let actual_crc32 = !crc_state;
+    if copied != expected_size || actual_crc32 != expected_crc32 {
         return Err(file_error(
             "fileChanged",
             format!(
-                "A staged Office ZIP entry changed size while being written (expected {expected_size}, copied {copied})."
+                "A staged Office ZIP entry changed while being written (expected {expected_size} bytes / CRC {expected_crc32:08x}, copied {copied} bytes / CRC {actual_crc32:08x})."
             ),
         ));
     }
@@ -439,7 +469,7 @@ impl ZipArchiveWriter<'_> {
             .checked_add(30 + name_bytes.len() as u64)
             .ok_or_else(|| file_error("fileTooLarge", "Canonical Office ZIP size overflowed."))?;
         if let Some(path) = path {
-            copy_staged_entry(path, self.output, size)?;
+            copy_staged_entry(path, self.output, size, crc)?;
         } else if let Some(data) = bytes {
             self.output.write_all(data).map_err(|error| {
                 SignatureClientError::Invalid(format!(
@@ -945,6 +975,31 @@ mod tests {
             .unwrap(),
             expected
         );
+    }
+
+
+
+    #[test]
+    fn office_writer_rejects_staged_entry_mutations_before_publication() {
+        let workspace = TempWorkspace::create().unwrap();
+        let path = workspace.path().join("entry.bin");
+        fs::write(&path, b"original").unwrap();
+        let entry = StagedEntry {
+            name: "word/document.xml".to_owned(),
+            path: path.clone(),
+            size: b"original".len() as u64,
+            crc32: crc32(b"original"),
+        };
+
+        // Same-size replacement must be caught by CRC validation, not just file length.
+        fs::write(&path, b"tampered").unwrap();
+        let output_path = workspace.path().join("output.docx");
+        let mut output = File::create(&output_path).unwrap();
+        let result = write_stored_archive(&[entry], None, &mut output, &workspace);
+        assert!(matches!(
+            result,
+            Err(SignatureClientError::FileInput { kind: "fileChanged", .. })
+        ));
     }
 
     #[test]
