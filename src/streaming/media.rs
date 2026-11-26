@@ -656,3 +656,133 @@ fn build_flac_signature_metadata(canonical_prefix: &[u8], payload: &str) -> Resu
     }
     Ok(output)
 }
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture_path(extension: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "majik-stream-media-{}.{extension}",
+            uuid::Uuid::new_v4()
+        ))
+    }
+
+    fn assert_streaming_round_trip(
+        format: &str,
+        mime: &str,
+        extension: &str,
+        unsigned: Vec<u8>,
+    ) {
+        let input_path = fixture_path(extension);
+        std::fs::write(&input_path, &unsigned).unwrap();
+
+        let input = OpenedStreamFile::open(&input_path, Some(mime)).unwrap();
+        let plan = build_plan(&input, format).unwrap();
+        let payload = "streaming-test-envelope";
+        let replacement = output_replacement(&plan, payload)
+            .unwrap()
+            .expect("media handler should produce an embedded replacement");
+
+        let start = usize::try_from(plan.replace_start).unwrap();
+        let end = usize::try_from(plan.replace_end).unwrap();
+        let mut signed = Vec::with_capacity(
+            unsigned.len() - (end - start) + replacement.len(),
+        );
+        signed.extend_from_slice(&unsigned[..start]);
+        signed.extend_from_slice(&replacement);
+        signed.extend_from_slice(&unsigned[end..]);
+
+        // The core implementation must recognise and strip the streaming writer's metadata
+        // exactly, otherwise the reader hash would diverge in production verification.
+        let core_canonical = MajikSignature::strip_from(&signed, Some(mime)).unwrap();
+        assert_eq!(core_canonical, unsigned, "{format}: core canonical bytes");
+
+        std::fs::write(&input_path, &signed).unwrap();
+        let signed_input = OpenedStreamFile::open(&input_path, Some(mime)).unwrap();
+        let signed_plan = build_plan(&signed_input, format).unwrap();
+        assert_eq!(
+            signed_plan.envelope_payload.as_deref(),
+            Some(payload),
+            "{format}: signature metadata extraction"
+        );
+        let mut reader = RewrittenFileReader::new(
+            signed_input.try_clone_file().unwrap(),
+            &signed_plan,
+        )
+        .unwrap();
+        let mut streamed_canonical = Vec::new();
+        reader.read_to_end(&mut streamed_canonical).unwrap();
+        assert_eq!(
+            streamed_canonical, core_canonical,
+            "{format}: streaming canonical reader must match core strip()"
+        );
+
+        let _ = std::fs::remove_file(input_path);
+    }
+
+    #[test]
+    fn png_streaming_metadata_matches_core_handler() {
+        let mut png = PNG_SIGNATURE.to_vec();
+        // A minimal IEND chunk (zero length, valid CRC).
+        png.extend_from_slice(&0u32.to_be_bytes());
+        png.extend_from_slice(b"IEND");
+        png.extend_from_slice(&0xae42_6082u32.to_be_bytes());
+        assert_streaming_round_trip("png", "image/png", "png", png);
+    }
+
+    #[test]
+    fn jpeg_streaming_metadata_matches_core_handler() {
+        assert_streaming_round_trip(
+            "jpeg",
+            "image/jpeg",
+            "jpg",
+            vec![0xff, 0xd8, 0xff, 0xd9],
+        );
+    }
+
+    #[test]
+    fn mp3_streaming_metadata_matches_core_handler() {
+        // A small MPEG frame-sync fixture; media bytes are not buffered by the parser.
+        assert_streaming_round_trip(
+            "mp3",
+            "audio/mpeg",
+            "mp3",
+            vec![0xff, 0xfb, 0x90, 0x64, 0x00, 0x00],
+        );
+    }
+
+    #[test]
+    fn flac_streaming_metadata_matches_core_handler() {
+        let mut flac = FLAC_MAGIC.to_vec();
+        // STREAMINFO is the required first metadata block and is the final block here.
+        flac.extend_from_slice(&[0x80, 0, 0, 34]);
+        flac.extend_from_slice(&[0u8; 34]);
+        // A small frame-sync prefix so the stream has audio data after metadata.
+        flac.extend_from_slice(&[0xff, 0xf8, 0x00, 0x00]);
+        assert_streaming_round_trip("flac", "audio/flac", "flac", flac);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mp3_metadata_parser_does_not_materialise_large_audio_payloads() {
+        let path = fixture_path("mp3");
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        // Empty ID3v2.3 tag followed by a sparse 10 GiB audio payload.
+        file.write_all(b"ID3\\x03\\x00\\x00\\x00\\x00\\x00\\x00")
+            .unwrap();
+        file.set_len(10 * 1024 * 1024 * 1024).unwrap();
+        drop(file);
+
+        let source = OpenedStreamFile::open(&path, Some("audio/mpeg")).unwrap();
+        let plan = build_plan(&source, "mp3").unwrap();
+        assert_eq!(plan.canonical_len().unwrap(), source.length());
+        assert!(plan.canonical_replacement.len() < 1024);
+        let _ = std::fs::remove_file(path);
+    }
+}
