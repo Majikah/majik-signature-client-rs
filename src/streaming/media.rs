@@ -1158,7 +1158,6 @@ mod tests {
         assert_streaming_round_trip("flac", "audio/flac", "flac", flac);
     }
 
-
     #[test]
     fn wav_streaming_metadata_matches_core_handler() {
         let input_path = fixture_path("wav");
@@ -1180,9 +1179,8 @@ mod tests {
         let mut source = OpenedStreamFile::open(&input_path, Some("audio/wav")).unwrap();
         let plan = build_plan(&source, "wav").unwrap();
         let mut stream = StreamingFileOptions::default();
-        let expected_hash = bytes_to_base64(
-            &hash_reader_for_plan(&source, &plan, &mut stream, false).unwrap(),
-        );
+        let expected_hash =
+            bytes_to_base64(&hash_reader_for_plan(&source, &plan, &mut stream, false).unwrap());
         let replacement = output_replacement(&plan, "streaming-test-envelope")
             .unwrap()
             .unwrap();
@@ -1224,8 +1222,7 @@ mod tests {
             .open(&path)
             .unwrap();
         // Empty ID3v2.3 tag followed by a sparse 10 GiB audio payload.
-        file.write_all(b"ID3\x03\x00\x00\x00\x00\x00\x00")
-            .unwrap();
+        file.write_all(b"ID3\x03\x00\x00\x00\x00\x00\x00").unwrap();
         file.set_len(10 * 1024 * 1024 * 1024).unwrap();
         drop(file);
 
