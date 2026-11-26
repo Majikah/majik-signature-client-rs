@@ -1419,6 +1419,61 @@ fn parse_plan_envelope(plan: &RewritePlan) -> Result<Option<MajikSignatureEnvelo
         .map_err(Into::into)
 }
 
+fn verify_prior_stream(
+    source: &OpenedStreamFile,
+    plan: &RewritePlan,
+    envelope: &MajikSignatureEnvelope,
+    stream: &mut StreamingFileOptions<'_>,
+) -> Result<String> {
+    validate_envelope_commitments(envelope)?;
+    let content_hash = bytes_to_base64(&hash_reader_for_plan(source, plan, stream, false)?);
+    let selected = select_signature_for_content(envelope, &content_hash, None).ok_or_else(|| {
+        SignatureClientError::Invalid(
+            "The prior file does not match any signature in its envelope; refusing to create a revision."
+                .into(),
+        )
+    })?;
+    let signature = MajikSignature::from_json(selected)?;
+    let public_keys = signature.extract_public_keys()?;
+    let mut reader = RewrittenFileReader::new(source.try_clone_file()?, plan)?;
+    let verified = run_with_hash_options(stream, plan.canonical_len()?, false, |hash_options| {
+        MajikSignature::verify_reader_with_options(
+            &mut reader,
+            &signature,
+            &public_keys,
+            None,
+            hash_options,
+        )
+    })?;
+    if !verified.valid {
+        return Err(SignatureClientError::Invalid(format!(
+            "The prior file signature is invalid: {}",
+            verified.reason.unwrap_or_else(|| "signature verification failed".into())
+        )));
+    }
+    source.ensure_unchanged()?;
+    Ok(content_hash)
+}
+
+fn backfill_initial_file_version(
+    envelope: MajikSignatureEnvelope,
+    content_hash: &str,
+) -> Result<MajikSignatureEnvelope> {
+    if !envelope.file_versions().is_empty() || envelope.signatures().is_empty() {
+        return Ok(envelope);
+    }
+    let first = &envelope.signatures()[0];
+    let entry = FileVersion {
+        version: 1,
+        timestamp: first.timestamp.clone(),
+        content_hash: content_hash.to_owned(),
+        previous_version_hash: None,
+        created_by: Some(first.signer_id.clone()),
+        message: None,
+    };
+    Ok(envelope.with_file_version(entry)?)
+}
+
 fn check_envelope_before_signing(
     envelope: &MajikSignatureEnvelope,
     _current_hash: &str,
