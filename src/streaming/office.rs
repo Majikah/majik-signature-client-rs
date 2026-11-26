@@ -7,7 +7,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 use zip::ZipArchive;
@@ -462,6 +462,8 @@ pub(super) fn detect_office_input(source: &OpenedStreamFile, head: &[u8]) -> Res
         SignatureClientError::Invalid(format!("Invalid ZIP-based file: {error}"))
     })?;
     let mut odf_mimetype = None;
+    let mut has_msix_marker = false;
+    let mut has_ooxml_marker = false;
     for index in 0..archive.len() {
         let (name, size) = {
             let entry = archive.by_index_raw(index).map_err(|error| {
@@ -469,12 +471,8 @@ pub(super) fn detect_office_input(source: &OpenedStreamFile, head: &[u8]) -> Res
             })?;
             (decode_name(entry.name_raw()), entry.size())
         };
-        if is_msix_name(&name) {
-            return Ok(false);
-        }
-        if OOXML_ENTRIES.contains(&name.as_str()) {
-            return Ok(true);
-        }
+        has_msix_marker |= is_msix_name(&name);
+        has_ooxml_marker |= OOXML_ENTRIES.contains(&name.as_str());
         if name == "mimetype" && size <= MAX_SIGNATURE_ENTRY_BYTES {
             let mut entry = archive.by_index(index).map_err(|error| {
                 SignatureClientError::Invalid(format!("Could not read ODF mimetype entry: {error}"))
@@ -485,6 +483,12 @@ pub(super) fn detect_office_input(source: &OpenedStreamFile, head: &[u8]) -> Res
             })?;
             odf_mimetype = Some(String::from_utf8_lossy(&bytes).trim().to_owned());
         }
+    }
+    if has_msix_marker {
+        return Ok(false);
+    }
+    if has_ooxml_marker {
+        return Ok(true);
     }
     Ok(odf_mimetype
         .as_deref()
@@ -577,5 +581,60 @@ mod tests {
         let second_bytes = fs::read(workspace.path().join("second.zip")).unwrap();
         assert_eq!(first_len, second_len);
         assert_eq!(first_bytes, second_bytes);
+    }
+
+    #[test]
+    fn office_streaming_canonical_archive_matches_the_core_handler() {
+        use super::super::MajikSignature;
+
+        let workspace = TempWorkspace::create().unwrap();
+        let mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let mut make_entry = |name: &str, bytes: &[u8], index: usize| {
+            let path = workspace.path().join(format!("input-entry-{index}.bin"));
+            fs::write(&path, bytes).unwrap();
+            StagedEntry {
+                name: name.to_owned(),
+                path,
+                size: bytes.len() as u64,
+                crc32: crc32(bytes),
+            }
+        };
+
+        // Include a duplicate to assert ZipEntries.set() semantics (replace in its original slot),
+        // and a prior signature which must be stripped before calculating the canonical digest.
+        let entries = vec![
+            make_entry("[Content_Types].xml", b"<types/>", 0),
+            make_entry("word/document.xml", b"<old/>", 1),
+            make_entry("word/document.xml", b"<document/>", 2),
+            make_entry("docProps/core.xml", b"<core/>", 3),
+        ];
+        let source_path = workspace.path().join("sample.docx");
+        let mut source_zip = File::create(&source_path).unwrap();
+        write_stored_archive(&entries, Some(b"old-signature"), &mut source_zip, &workspace).unwrap();
+        source_zip.sync_all().unwrap();
+        drop(source_zip);
+
+        let source_bytes = fs::read(&source_path).unwrap();
+        let source = OpenedStreamFile::open(&source_path, Some(mime)).unwrap();
+        let plan = build_plan(&source).unwrap();
+        assert_eq!(plan.envelope_payload(), Some("old-signature"));
+        let canonical = fs::read(plan.canonical_path()).unwrap();
+        let expected = MajikSignature::strip_from(&source_bytes, Some(mime)).unwrap();
+        assert_eq!(canonical, expected);
+
+        let signed_path = workspace.path().join("signed.docx");
+        let mut signed_zip = File::create(&signed_path).unwrap();
+        write_signed_archive(plan.office_archive.as_ref().unwrap(), "new-signature", &mut signed_zip).unwrap();
+        signed_zip.sync_all().unwrap();
+        drop(signed_zip);
+
+        let signed_bytes = fs::read(&signed_path).unwrap();
+        let stripped = MajikSignature::strip_from(&signed_bytes, Some(mime)).unwrap();
+        assert_eq!(stripped, expected);
+
+        let signed_source = OpenedStreamFile::open(&signed_path, Some(mime)).unwrap();
+        let signed_plan = build_plan(&signed_source).unwrap();
+        assert_eq!(signed_plan.envelope_payload(), Some("new-signature"));
+        assert_eq!(fs::read(signed_plan.canonical_path()).unwrap(), expected);
     }
 }
