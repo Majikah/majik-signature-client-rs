@@ -11,40 +11,29 @@ use thiserror::Error;
 pub enum SignatureClientError {
     #[error(transparent)]
     Key(#[from] KeyClientError),
-
     #[error(transparent)]
     Contacts(#[from] ContactManagerError),
-
     #[error(transparent)]
     Signature(#[from] MajikSignatureError),
-
     #[error(transparent)]
     File(#[from] MajikFileError),
-
     #[error(transparent)]
     Cjson(#[from] MajikCjsonError),
-
     /// A file argument could not be loaded or written. `kind` is stable for the TS side:
     /// `fileNotFound`, `fileNotAFile`, `fileUnreadable`, `fileEmpty`, `fileTooLarge`,
-    /// `fileInvalid`, `fileExists`, `fileWriteFailed`.
+    /// `fileInvalid`, `fileExists`, `fileWriteFailed`, `fileChanged`.
     #[error("{message}")]
     FileInput { kind: &'static str, message: String },
-
     #[error("Log error: {0}")]
     Log(String),
-
     #[error("Storage error: {0}")]
     Storage(String),
-
     #[error("{0}")]
     Invalid(String),
-
     #[error("No active account -- set an active account first")]
     NoActiveAccount,
-
     #[error("Account not found in own accounts: \"{0}\"")]
     OwnAccountNotFound(String),
-
     #[error("client state is unavailable: a lock was poisoned")]
     Poisoned,
 }
@@ -84,7 +73,7 @@ impl From<serde_json::Error> for SignatureClientError {
     }
 }
 
-/// Serialises as `{ "kind": "...", "message": "..." }` so Tauri commands can return it directly.
+/// Serialises as `{ "kind": "...", "message": "..." }` so Tauri can return stable error DTOs.
 impl serde::Serialize for SignatureClientError {
     fn serialize<S: serde::Serializer>(&self, s: S) -> std::result::Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;

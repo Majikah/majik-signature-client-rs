@@ -21,6 +21,7 @@ pub mod shared;
 pub mod signing;
 pub mod stamps;
 pub mod stamps_api;
+pub mod streaming;
 pub mod tsa;
 
 pub use backup::{AppDataSnapshot, BackupType, ContactManagerSnapshot};
@@ -36,6 +37,10 @@ pub use prefs::UserAppPreferences;
 pub use shared::{SigShared, MAX_ACTIVITY_LOGS};
 pub use signing::{OpContext, SigInput, SignResult, SignerRef, VerifyResult, VerifyTarget};
 pub use stamps::{MajikSignatureStamp, StampAssetKind, StampJson, StampMeta};
+pub use streaming::{
+    write_atomic_bytes, write_atomic_with, OpenedStreamFile, StreamingDetachedSignResult,
+    StreamingEmbeddedSignResult, StreamingFileOptions, StreamingOutput,
+};
 
 pub use contacts as majik_contact_manager;
 pub use majik_file;
