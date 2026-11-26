@@ -1158,6 +1158,62 @@ mod tests {
         assert_streaming_round_trip("flac", "audio/flac", "flac", flac);
     }
 
+
+    #[test]
+    fn wav_streaming_metadata_matches_core_handler() {
+        let input_path = fixture_path("wav");
+        let output_path = fixture_path("signed.wav");
+        let mut wav = Vec::new();
+        wav.extend_from_slice(b"RIFF");
+        wav.extend_from_slice(&0u32.to_le_bytes());
+        wav.extend_from_slice(b"WAVE");
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&[1, 0, 1, 0, 0x40, 0x1f, 0, 0, 0x80, 0x3e, 0, 0, 2, 0, 16, 0]);
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&4u32.to_le_bytes());
+        wav.extend_from_slice(&[0, 0, 0, 0]);
+        let riff_size = u32::try_from(wav.len() - 8).unwrap();
+        wav[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        std::fs::write(&input_path, &wav).unwrap();
+
+        let mut source = OpenedStreamFile::open(&input_path, Some("audio/wav")).unwrap();
+        let plan = build_plan(&source, "wav").unwrap();
+        let mut stream = StreamingFileOptions::default();
+        let expected_hash = bytes_to_base64(
+            &hash_reader_for_plan(&source, &plan, &mut stream, false).unwrap(),
+        );
+        let replacement = output_replacement(&plan, "streaming-test-envelope")
+            .unwrap()
+            .unwrap();
+        let mut output = File::create(&output_path).unwrap();
+        write_rewritten_and_check(
+            source.file_mut(),
+            &mut output,
+            &plan,
+            &replacement,
+            &expected_hash,
+            &mut stream,
+        )
+        .unwrap();
+        output.sync_all().unwrap();
+        drop(output);
+
+        let signed = std::fs::read(&output_path).unwrap();
+        let core_canonical = MajikSignature::strip_from(&signed, Some("audio/wav")).unwrap();
+        assert_eq!(core_canonical, wav);
+
+        let signed_source = OpenedStreamFile::open(&output_path, Some("audio/wav")).unwrap();
+        let signed_plan = build_plan(&signed_source, "wav").unwrap();
+        let streamed_hash = bytes_to_base64(
+            &hash_reader_for_plan(&signed_source, &signed_plan, &mut stream, false).unwrap(),
+        );
+        assert_eq!(streamed_hash, expected_hash);
+
+        let _ = std::fs::remove_file(input_path);
+        let _ = std::fs::remove_file(output_path);
+    }
+
     #[cfg(unix)]
     #[test]
     fn mp3_metadata_parser_does_not_materialise_large_audio_payloads() {
@@ -1168,7 +1224,7 @@ mod tests {
             .open(&path)
             .unwrap();
         // Empty ID3v2.3 tag followed by a sparse 10 GiB audio payload.
-        file.write_all(b"ID3\\x03\\x00\\x00\\x00\\x00\\x00\\x00")
+        file.write_all(b"ID3\x03\x00\x00\x00\x00\x00\x00")
             .unwrap();
         file.set_len(10 * 1024 * 1024 * 1024).unwrap();
         drop(file);
