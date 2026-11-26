@@ -48,7 +48,20 @@ impl TempWorkspace {
         let base = std::env::temp_dir();
         for _ in 0..8 {
             let path = base.join(format!("majik-office-stream-{}", uuid::Uuid::new_v4().simple()));
-            match fs::create_dir(&path) {
+            let create_result = {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    let mut builder = fs::DirBuilder::new();
+                    builder.mode(0o700);
+                    builder.create(&path)
+                }
+                #[cfg(not(unix))]
+                {
+                    fs::create_dir(&path)
+                }
+            };
+            match create_result {
                 Ok(()) => return Ok(Self { path }),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(error) => return Err(io_file_error("fileWriteFailed", &path, error)),
