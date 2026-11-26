@@ -11,7 +11,9 @@ use std::path::{Path, PathBuf};
 
 use zip::ZipArchive;
 
-use super::{file_error, io_file_error, OpenedStreamFile, Result, RewritePlan, SignatureClientError};
+use super::{
+    file_error, io_file_error, OpenedStreamFile, Result, RewritePlan, SignatureClientError,
+};
 
 const OFFICE_ENTRY: &str = "majik-signature.json";
 const MAX_UNZIPPED_BYTES: u64 = 512 * 1024 * 1024;
@@ -30,8 +32,13 @@ const OFFICE_MIME_TYPES: &[&str] = &[
     "application/vnd.oasis.opendocument.spreadsheet",
     "application/vnd.oasis.opendocument.presentation",
 ];
-const MSIX_PACKAGE_ENTRIES: &[&str] = &["AppxManifest.xml", "AppxBlockMap.xml", "AppxSignature.p7x"];
-const OOXML_ENTRIES: &[&str] = &["word/document.xml", "xl/workbook.xml", "ppt/presentation.xml"];
+const MSIX_PACKAGE_ENTRIES: &[&str] =
+    &["AppxManifest.xml", "AppxBlockMap.xml", "AppxSignature.p7x"];
+const OOXML_ENTRIES: &[&str] = &[
+    "word/document.xml",
+    "xl/workbook.xml",
+    "ppt/presentation.xml",
+];
 const ODF_MIME_TYPES: &[&str] = &[
     "application/vnd.oasis.opendocument.text",
     "application/vnd.oasis.opendocument.spreadsheet",
@@ -171,8 +178,10 @@ fn validate_zip_directory(source: &OpenedStreamFile) -> Result<()> {
         ));
     }
 
-    let tail_len = usize::try_from(file_len.min((EOCD_LEN + u16::MAX as usize) as u64))
-        .map_err(|_| SignatureClientError::Invalid("ZIP end-record window is unsupported".into()))?;
+    let tail_len =
+        usize::try_from(file_len.min((EOCD_LEN + u16::MAX as usize) as u64)).map_err(|_| {
+            SignatureClientError::Invalid("ZIP end-record window is unsupported".into())
+        })?;
     let tail = read_zip_at(source, file_len - tail_len as u64, tail_len)?;
     let eocd_relative = tail
         .windows(4)
@@ -217,10 +226,7 @@ fn validate_zip_directory(source: &OpenedStreamFile) -> Result<()> {
             eocd_absolute - ZIP64_LOCATOR_LEN as u64,
             ZIP64_LOCATOR_LEN,
         )?;
-        if &locator[..4] != b"PK\x06\x07"
-            || u32_at(&locator, 4) != 0
-            || u32_at(&locator, 16) != 1
-        {
+        if &locator[..4] != b"PK\x06\x07" || u32_at(&locator, 4) != 0 || u32_at(&locator, 16) != 1 {
             return Err(SignatureClientError::Invalid(
                 "ZIP64 end record locator is invalid or multi-disk".into(),
             ));
@@ -237,11 +243,7 @@ fn validate_zip_directory(source: &OpenedStreamFile) -> Result<()> {
                 "Multi-disk ZIP64 archives are not supported".into(),
             ));
         }
-        (
-            u64_at(&zip64, 32),
-            u64_at(&zip64, 40),
-            u64_at(&zip64, 48),
-        )
+        (u64_at(&zip64, 32), u64_at(&zip64, 40), u64_at(&zip64, 48))
     } else {
         if entries_on_disk != total_entries {
             return Err(SignatureClientError::Invalid(
@@ -267,9 +269,11 @@ fn validate_zip_directory(source: &OpenedStreamFile) -> Result<()> {
             "Office ZIP central directory exceeds the 32 MiB metadata safety limit.",
         ));
     }
-    let directory_end = directory_offset.checked_add(directory_size).ok_or_else(|| {
-        SignatureClientError::Invalid("ZIP central-directory offset overflowed".into())
-    })?;
+    let directory_end = directory_offset
+        .checked_add(directory_size)
+        .ok_or_else(|| {
+            SignatureClientError::Invalid("ZIP central-directory offset overflowed".into())
+        })?;
     if directory_end > file_len || directory_end > eocd_absolute {
         return Err(SignatureClientError::Invalid(
             "ZIP central directory extends beyond the end record".into(),
@@ -290,8 +294,12 @@ fn read_entry_bounded(
             format!("{label} exceeds its {maximum_size}-byte safety limit."),
         ));
     }
-    let capacity = usize::try_from(declared_size)
-        .map_err(|_| file_error("fileTooLarge", format!("{label} size cannot be represented.")))?;
+    let capacity = usize::try_from(declared_size).map_err(|_| {
+        file_error(
+            "fileTooLarge",
+            format!("{label} size cannot be represented."),
+        )
+    })?;
     let mut bytes = Vec::with_capacity(capacity);
     let mut buffer = [0u8; 8192];
     loop {
@@ -437,11 +445,15 @@ fn write_archive_entry(
 
     write_u32(central, 0x0201_4b50)?;
     central.write_all(&[20, 0]).map_err(|error| {
-        SignatureClientError::Invalid(format!("Could not write Office ZIP central directory: {error}"))
+        SignatureClientError::Invalid(format!(
+            "Could not write Office ZIP central directory: {error}"
+        ))
     })?;
     write_u16(central, 20)?;
     central.write_all(&[0, flags_hi]).map_err(|error| {
-        SignatureClientError::Invalid(format!("Could not write Office ZIP central directory: {error}"))
+        SignatureClientError::Invalid(format!(
+            "Could not write Office ZIP central directory: {error}"
+        ))
     })?;
     write_u16(central, 0)?;
     write_u16(central, dos_time)?;
@@ -457,12 +469,19 @@ fn write_archive_entry(
     write_u32(central, 0)?;
     write_u32(central, local_offset)?;
     central.write_all(name_bytes).map_err(|error| {
-        SignatureClientError::Invalid(format!("Could not write Office ZIP central directory: {error}"))
+        SignatureClientError::Invalid(format!(
+            "Could not write Office ZIP central directory: {error}"
+        ))
     })?;
 
     *central_size = (*central_size)
         .checked_add(46 + name_bytes.len() as u64)
-        .ok_or_else(|| file_error("fileTooLarge", "Office ZIP central directory size overflowed."))?;
+        .ok_or_else(|| {
+            file_error(
+                "fileTooLarge",
+                "Office ZIP central directory size overflowed.",
+            )
+        })?;
     if *central_size > MAX_CENTRAL_DIRECTORY_BYTES {
         return Err(file_error(
             "fileTooLarge",
@@ -548,9 +567,11 @@ fn write_stored_archive(
         ));
     }
 
-    central.flush()
+    central
+        .flush()
         .map_err(|error| io_file_error("fileWriteFailed", &central_path, error))?;
-    central.seek(SeekFrom::Start(0))
+    central
+        .seek(SeekFrom::Start(0))
         .map_err(|error| io_file_error("fileUnreadable", &central_path, error))?;
 
     let central_offset = output_position;
@@ -566,8 +587,12 @@ fn write_stored_archive(
         .checked_add(copied)
         .ok_or_else(|| file_error("fileTooLarge", "Canonical Office ZIP size overflowed."))?;
 
-    let count = u16::try_from(entry_count)
-        .map_err(|_| file_error("fileTooLarge", "Office ZIP has too many entries for its end record."))?;
+    let count = u16::try_from(entry_count).map_err(|_| {
+        file_error(
+            "fileTooLarge",
+            "Office ZIP has too many entries for its end record.",
+        )
+    })?;
     write_u32(output, 0x0605_4b50)?;
     write_u16(output, 0)?;
     write_u16(output, 0)?;
@@ -591,7 +616,10 @@ fn stage_archive(
         SignatureClientError::Invalid(format!("Invalid Office ZIP archive: {error}"))
     })?;
     if archive.len() > MAX_ZIP_ENTRIES {
-        return Err(file_error("fileTooLarge", "Office ZIP has too many entries."));
+        return Err(file_error(
+            "fileTooLarge",
+            "Office ZIP has too many entries.",
+        ));
     }
 
     let mut declared_total = 0u64;
@@ -599,9 +627,9 @@ fn stage_archive(
         let entry = archive.by_index_raw(index).map_err(|error| {
             SignatureClientError::Invalid(format!("Invalid Office ZIP directory: {error}"))
         })?;
-        declared_total = declared_total
-            .checked_add(entry.size())
-            .ok_or_else(|| file_error("fileTooLarge", "Office ZIP uncompressed size overflowed."))?;
+        declared_total = declared_total.checked_add(entry.size()).ok_or_else(|| {
+            file_error("fileTooLarge", "Office ZIP uncompressed size overflowed.")
+        })?;
         if declared_total > MAX_UNZIPPED_BYTES {
             return Err(file_error(
                 "fileTooLarge",
@@ -649,7 +677,9 @@ fn stage_archive(
             .open(&staged_path)
             .map_err(|error| io_file_error("fileWriteFailed", &staged_path, error))?;
         let mut entry = archive.by_index(index).map_err(|error| {
-            SignatureClientError::Invalid(format!("Could not open Office ZIP entry {name}: {error}"))
+            SignatureClientError::Invalid(format!(
+                "Could not open Office ZIP entry {name}: {error}"
+            ))
         })?;
         let mut size = 0u64;
         let mut crc_state = !0u32;
@@ -665,9 +695,9 @@ fn stage_archive(
             size = size
                 .checked_add(count as u64)
                 .ok_or_else(|| file_error("fileTooLarge", "Office ZIP entry size overflowed."))?;
-            actual_total = actual_total
-                .checked_add(count as u64)
-                .ok_or_else(|| file_error("fileTooLarge", "Office ZIP uncompressed size overflowed."))?;
+            actual_total = actual_total.checked_add(count as u64).ok_or_else(|| {
+                file_error("fileTooLarge", "Office ZIP uncompressed size overflowed.")
+            })?;
             if actual_total > MAX_UNZIPPED_BYTES || size > declared_size {
                 return Err(file_error(
                     "fileTooLarge",
@@ -675,7 +705,8 @@ fn stage_archive(
                 ));
             }
             crc_state = update_crc32(crc_state, &buffer[..count]);
-            staged.write_all(&buffer[..count])
+            staged
+                .write_all(&buffer[..count])
                 .map_err(|error| io_file_error("fileWriteFailed", &staged_path, error))?;
         }
         if size != declared_size {
@@ -684,7 +715,8 @@ fn stage_archive(
                 format!("Office ZIP entry {name} did not inflate to its declared size."),
             ));
         }
-        staged.sync_all()
+        staged
+            .sync_all()
             .map_err(|error| io_file_error("fileWriteFailed", &staged_path, error))?;
         drop(staged);
 
@@ -735,9 +767,7 @@ pub(super) fn detect_office_input(source: &OpenedStreamFile, head: &[u8]) -> Res
 
         if name == "mimetype" && size <= MAX_SIGNATURE_ENTRY_BYTES {
             let mut entry = archive.by_index(index).map_err(|error| {
-                SignatureClientError::Invalid(format!(
-                    "Could not open ODF mimetype entry: {error}"
-                ))
+                SignatureClientError::Invalid(format!("Could not open ODF mimetype entry: {error}"))
             })?;
             let bytes = read_entry_bounded(
                 &mut entry,
@@ -792,10 +822,7 @@ pub(super) fn build_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         canonical_replacement: Vec::new(),
         envelope_payload: archive.envelope_payload().map(str::to_owned),
         handler: "Office (DOCX/XLSX/PPTX/ODF)",
-        mime_type: source
-            .mime_type()
-            .unwrap_or("application/zip")
-            .to_owned(),
+        mime_type: source.mime_type().unwrap_or("application/zip").to_owned(),
         has_mp4_moov: false,
         mp4_moov_after_mdat: false,
         riff_size_patch: None,
@@ -865,7 +892,10 @@ mod tests {
         let source_bytes = fs::read(&source_path).unwrap();
         let source = OpenedStreamFile::open(&source_path, Some(mime)).unwrap();
         let plan = build_plan(&source).unwrap();
-        assert_eq!(plan.office_archive.as_ref().unwrap().envelope_payload(), Some("old-signature"));
+        assert_eq!(
+            plan.office_archive.as_ref().unwrap().envelope_payload(),
+            Some("old-signature")
+        );
         let canonical = fs::read(plan.canonical_path()).unwrap();
         let expected = MajikSignature::strip_from(&source_bytes, Some(mime)).unwrap();
         assert_eq!(canonical, expected);
@@ -887,7 +917,14 @@ mod tests {
 
         let signed_source = OpenedStreamFile::open(&signed_path, Some(mime)).unwrap();
         let signed_plan = build_plan(&signed_source).unwrap();
-        assert_eq!(signed_plan.office_archive.as_ref().unwrap().envelope_payload(), Some("new-signature"));
+        assert_eq!(
+            signed_plan
+                .office_archive
+                .as_ref()
+                .unwrap()
+                .envelope_payload(),
+            Some("new-signature")
+        );
         assert_eq!(fs::read(signed_plan.canonical_path()).unwrap(), expected);
     }
 
