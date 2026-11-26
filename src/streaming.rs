@@ -1231,7 +1231,7 @@ fn detect_stream_format(source: &OpenedStreamFile) -> Result<&'static str> {
                 | "audio/wave"
                 | "audio/x-wav"
         );
-    let specialised_magic = head.starts_with(b"PK\\x03\\x04")
+    let specialised_magic = head.starts_with(b"PK\x03\x04")
         || head.starts_with(b"RIFF") && head.len() >= 12 && &head[8..12] == b"WAVE";
     if specialised_mime || specialised_magic {
         return Err(SignatureClientError::Invalid(format!(
@@ -1246,13 +1246,11 @@ fn detect_stream_format(source: &OpenedStreamFile) -> Result<&'static str> {
 }
 
 fn build_rewrite_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
-    match detect_stream_format(source)? {
+    let format = detect_stream_format(source)?;
+    match format {
         "pdf" => parse_pdf_plan(source),
         "mp4" => parse_mp4_plan(source),
-        "png" | "jpeg" | "mp3" | "flac" => {
-            let format = detect_stream_format(source)?;
-            media::build_plan(source, format)
-        }
+        "png" | "jpeg" | "mp3" | "flac" => media::build_plan(source, format),
         _ => {
             let mut file = source.try_clone_file()?;
             let trailer = read_universal_trailer(&mut file, source.length(), source.path())?;
