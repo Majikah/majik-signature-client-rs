@@ -15,7 +15,7 @@ zip = { version = "9.8.2", default-features = false, features = ["deflate"] }
 rusqlite = "0.43"
 majik-key = "1.2.0"
 majik-signature = "1.5.0"
-majik-file = "1.1.0"
+majik-file = "1.2.0"
 majik-cjson = "1.0.0"
 base64 = "0.23"
 sha2 = "0.11.2"

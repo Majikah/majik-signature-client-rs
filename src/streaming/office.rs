@@ -442,7 +442,9 @@ impl ZipArchiveWriter<'_> {
             copy_staged_entry(path, self.output, size)?;
         } else if let Some(data) = bytes {
             self.output.write_all(data).map_err(|error| {
-                SignatureClientError::Invalid(format!("Could not write canonical Office ZIP: {error}"))
+                SignatureClientError::Invalid(format!(
+                    "Could not write canonical Office ZIP: {error}"
+                ))
             })?;
         }
         self.output_position = self
@@ -538,7 +540,13 @@ fn write_stored_archive(
         dos_date,
     };
     for entry in entries {
-        writer.write_entry(&entry.name, Some(&entry.path), None, entry.size, entry.crc32)?;
+        writer.write_entry(
+            &entry.name,
+            Some(&entry.path),
+            None,
+            entry.size,
+            entry.crc32,
+        )?;
     }
 
     if let Some(signature) = signature {
