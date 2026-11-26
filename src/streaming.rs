@@ -1682,7 +1682,6 @@ impl SignatureClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     fn sign_file_detached_stream_inner(
         &mut self,
         input_path: &Path,
@@ -1962,7 +1961,6 @@ impl SignatureClient {
     /// The prior file is never loaded into memory; its embedded envelope and content are checked
     /// with the same reader-based verification used by normal streaming verification.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn sign_file_embedded_stream_with_prior(
         &mut self,
         input_path: impl AsRef<Path>,
@@ -1984,7 +1982,6 @@ impl SignatureClient {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn sign_file_embedded_stream_inner(
         &mut self,
