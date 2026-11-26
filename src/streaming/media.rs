@@ -824,9 +824,7 @@ fn parse_wav_info_list(data: &[u8]) -> Result<Option<(Vec<u8>, Option<String>)>>
         offset = end;
     }
 
-    let replacement = if signature.is_none() {
-        Vec::new()
-    } else if kept.is_empty() {
+    let replacement = if signature.is_none() || kept.is_empty() {
         Vec::new()
     } else {
         let mut list_data = Vec::with_capacity(4 + kept.len());
