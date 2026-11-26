@@ -677,7 +677,10 @@ fn write_stored_archive(
             .write_all(&central_buffer[..count])
             .map_err(|error| io_file_error("fileWriteFailed", Path::new("<output>"), error))?;
         copied = copied.checked_add(count as u64).ok_or_else(|| {
-            file_error("fileTooLarge", "Office ZIP central-directory copy overflowed.")
+            file_error(
+                "fileTooLarge",
+                "Office ZIP central-directory copy overflowed.",
+            )
         })?;
     }
     if copied != writer.central_size {
