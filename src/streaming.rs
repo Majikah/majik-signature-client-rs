@@ -1619,6 +1619,7 @@ impl SignatureClient {
     /// are removed from the logical input before hashing, matching the format handlers. Existing
     /// `prior_file` revision flows remain on the legacy in-memory API until the core revision API
     /// accepts path/reader inputs.
+    /// Sign a native file path into a detached .mjksig sidecar using bounded memory.
     pub fn sign_file_detached_stream(
         &mut self,
         input_path: impl AsRef<Path>,
@@ -1628,9 +1629,53 @@ impl SignatureClient {
         stream: &mut StreamingFileOptions<'_>,
         overwrite: bool,
     ) -> Result<StreamingDetachedSignResult> {
+        self.sign_file_detached_stream_inner(
+            input_path.as_ref(),
+            envelope_output_path.as_ref(),
+            options,
+            context,
+            stream,
+            overwrite,
+            None,
+        )
+    }
+
+    /// Create a detached revision after verifying the previous file path against its existing
+    /// sidecar envelope. The previous file itself is read and hashed incrementally.
+    pub fn sign_file_detached_stream_with_prior(
+        &mut self,
+        input_path: impl AsRef<Path>,
+        envelope_output_path: impl AsRef<Path>,
+        prior_file_path: impl AsRef<Path>,
+        options: &SignDetachedFileOptions,
+        context: &OpContext,
+        stream: &mut StreamingFileOptions<'_>,
+        overwrite: bool,
+    ) -> Result<StreamingDetachedSignResult> {
+        self.sign_file_detached_stream_inner(
+            input_path.as_ref(),
+            envelope_output_path.as_ref(),
+            options,
+            context,
+            stream,
+            overwrite,
+            Some(prior_file_path.as_ref()),
+        )
+    }
+
+    fn sign_file_detached_stream_inner(
+        &mut self,
+        input_path: &Path,
+        envelope_output_path: &Path,
+        options: &SignDetachedFileOptions,
+        context: &OpContext,
+        stream: &mut StreamingFileOptions<'_>,
+        overwrite: bool,
+        prior_file_path: Option<&Path>,
+    ) -> Result<StreamingDetachedSignResult> {
         if options.prior_file.is_some() {
             return Err(SignatureClientError::Invalid(
-                "Streaming detached revisions are not available yet: priorFile requires the legacy revision verifier. Use a new detached signature or the in-memory API for this revision.".into(),
+                "For streaming revisions, pass priorFile as a native path using sign_file_detached_stream_with_prior; the in-memory priorFile field is not used by streaming APIs.".into(),
             ));
         }
         stream.validate()?;
@@ -1645,21 +1690,69 @@ impl SignatureClient {
             }
         }
         let plan = build_rewrite_plan(&source)?;
-        let envelope = match options.existing_envelope.clone() {
-            Some(input) => MajikSignatureEnvelope::from_input(input)?,
-            None => parse_plan_envelope(&plan)?.unwrap_or_else(MajikSignatureEnvelope::empty),
+        let (envelope, prior_content_hash) = if let Some(prior_path) = prior_file_path {
+            ensure_distinct_paths(prior_path, input_path)?;
+            ensure_distinct_paths(prior_path, envelope_output_path)?;
+            let prior_input = options.existing_envelope.clone().ok_or_else(|| {
+                SignatureClientError::Invalid(
+                    "A detached revision requires existingEnvelope for the prior file.".into(),
+                )
+            })?;
+            let prior_envelope = MajikSignatureEnvelope::from_input(prior_input)?;
+            let prior_source = OpenedStreamFile::open(prior_path, options.mime_type.as_deref())?;
+            let prior_plan = build_rewrite_plan(&prior_source)?;
+            let prior_hash = verify_prior_stream(&prior_source, &prior_plan, &prior_envelope, stream)?;
+            let prior_envelope = backfill_initial_file_version(prior_envelope, &prior_hash)?;
+            (prior_envelope, Some(prior_hash))
+        } else {
+            let envelope = match options.existing_envelope.clone() {
+                Some(input) => MajikSignatureEnvelope::from_input(input)?,
+                None => parse_plan_envelope(&plan)?.unwrap_or_else(MajikSignatureEnvelope::empty),
+            };
+            (envelope, None)
         };
         validate_envelope_commitments(&envelope)?;
         let total = plan.canonical_len()?;
+        let current_content_hash = if prior_content_hash.is_some() {
+            Some(bytes_to_base64(&hash_reader_for_plan(&source, &plan, stream, false)?))
+        } else {
+            None
+        };
         let sign_result = self.with_signing_key(context.account_id.as_deref(), false, |key| {
             envelope.assert_can_sign(key)?;
             let allowlist_hash =
                 envelope.resolve_allowlist_hash_for(key, options.expected_signers.as_deref());
+            let revision = if let Some(content_hash) = current_content_hash.as_deref() {
+                let last = envelope.last_file_version();
+                let next_version = match last {
+                    Some(entry) => entry.version.checked_add(1).ok_or_else(|| {
+                        SignatureClientError::Invalid("Detached file version counter overflowed".into())
+                    })?,
+                    None => 1,
+                };
+                let timestamp = options.timestamp.clone().unwrap_or_else(|| Timestamp::now().to_string());
+                Some(FileVersion {
+                    version: next_version,
+                    timestamp,
+                    content_hash: content_hash.to_owned(),
+                    previous_version_hash: last.map(MajikSignatureEnvelope::hash_file_version_entry),
+                    created_by: Some(key.fingerprint().to_string()),
+                    message: options.message.clone().filter(|message| !message.is_empty()),
+                })
+            } else {
+                None
+            };
+            let version_chain_hash = revision.as_ref().map(|entry| {
+                let mut chain = envelope.file_versions().to_vec();
+                chain.push(entry.clone());
+                MajikSignatureEnvelope::hash_file_version_chain(&chain)
+            });
             let sign_options = SignOptions {
                 content_type: options.content_type.clone(),
-                timestamp: options.timestamp.clone(),
+                timestamp: revision.as_ref().map(|entry| entry.timestamp.clone()).or_else(|| options.timestamp.clone()),
                 valid_until: options.valid_until.clone(),
                 allowlist_hash,
+                version_chain_hash,
                 session_context_hash: options.session_context_hash.clone(),
                 ..Default::default()
             };
@@ -1691,7 +1784,18 @@ impl SignatureClient {
             } else {
                 envelope.clone()
             };
-            let next = with_allowlist.with_signature(signature.to_json())?;
+            if let Some(expected_hash) = current_content_hash.as_deref() {
+                if signature.content_hash() != expected_hash {
+                    return Err(SignatureClientError::Invalid(
+                        "The source changed between the revision pre-hash and signing pass".into(),
+                    ));
+                }
+            }
+            let with_version = match revision {
+                Some(entry) => with_allowlist.with_file_version(entry)?,
+                None => with_allowlist,
+            };
+            let next = with_version.with_signature(signature.to_json())?;
 
             // Re-read and verify before publishing the sidecar. This catches source changes that
             // preserve file size/mtime precision while the first pass was running.
