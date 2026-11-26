@@ -15,6 +15,7 @@ use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use jiff::Timestamp;
@@ -461,7 +462,7 @@ struct RewritePlan {
     /// Canonical RIFF size field bytes for WAV (the unsigned form is normalised to its true length).
     riff_size_patch: Option<[u8; 4]>,
     /// Disk-backed canonical ZIP representation for Office/ODF files.
-    office_archive: Option<office::OfficeArchivePlan>,
+    office_archive: Option<Arc<office::OfficeArchivePlan>>,
 }
 
 impl RewritePlan {
