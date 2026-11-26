@@ -546,6 +546,29 @@ fn write_stored_archive(
         ));
     }
 
+    // Match the core Office handler's bounded unzip contract for the final signed archive too.
+    // The signature entry counts toward the same limit, otherwise a source at the boundary could
+    // be signed successfully but rejected by the next streaming verification pass.
+    let mut uncompressed_size = 0u64;
+    for entry in entries {
+        uncompressed_size = uncompressed_size.checked_add(entry.size).ok_or_else(|| {
+            file_error("fileTooLarge", "Office ZIP uncompressed size overflowed.")
+        })?;
+    }
+    if let Some(signature) = signature {
+        uncompressed_size = uncompressed_size
+            .checked_add(signature.len() as u64)
+            .ok_or_else(|| {
+                file_error("fileTooLarge", "Office ZIP uncompressed size overflowed.")
+            })?;
+    }
+    if uncompressed_size > MAX_UNZIPPED_BYTES {
+        return Err(file_error(
+            "fileTooLarge",
+            "Office ZIP content plus its embedded signature exceeds the core 512 MiB safety limit.",
+        ));
+    }
+
     let central_path = workspace.path().join(format!(
         "central-directory-{}.bin",
         uuid::Uuid::new_v4().simple()
