@@ -1225,7 +1225,10 @@ mod tests {
 
         let source = OpenedStreamFile::open(&path, Some("audio/mpeg")).unwrap();
         let plan = build_plan(&source, "mp3").unwrap();
-        assert_eq!(plan.canonical_len().unwrap(), source.length());
+        // The empty ID3 header is intentionally removed from the canonical form.
+        assert_eq!(plan.replace_start, 0);
+        assert_eq!(plan.replace_end, 10);
+        assert_eq!(plan.canonical_len().unwrap(), source.length() - 10);
         assert!(plan.canonical_replacement.len() < 1024);
         let _ = std::fs::remove_file(path);
     }
