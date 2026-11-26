@@ -391,8 +391,7 @@ where
                         Err(publish_error) => {
                             match fs::rename(&backup, target) {
                                 Ok(()) => Err(publish_error),
-                                Err(restore_error) => Err(io::Error::new(
-                                    io::ErrorKind::Other,
+                                Err(restore_error) => Err(io::Error::other(
                                     format!("Could not publish output ({publish_error}) or restore the previous file ({restore_error}); previous file is preserved at {}", backup.display()),
                                 )),
                             }
