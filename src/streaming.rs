@@ -1660,7 +1660,6 @@ impl SignatureClient {
     /// Create a detached revision after verifying the previous file path against its existing
     /// sidecar envelope. The previous file itself is read and hashed incrementally.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     pub fn sign_file_detached_stream_with_prior(
         &mut self,
         input_path: impl AsRef<Path>,
