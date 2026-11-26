@@ -12,6 +12,8 @@ const JPEG_MAJIK_IDENTIFIER: &[u8] = b"MAJIK\0";
 const ID3_DESCRIPTION: &[u8] = b"MAJIK-SIGNATURE";
 const FLAC_MAGIC: &[u8; 4] = b"fLaC";
 const FLAC_APPLICATION_ID: &[u8; 4] = b"MAJK";
+const WAV_RIFF: &[u8; 4] = b"RIFF";
+const WAV_WAVE: &[u8; 4] = b"WAVE";
 const MAX_MEDIA_METADATA_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_MEDIA_CHUNKS: usize = 65_536;
 
@@ -44,6 +46,7 @@ fn make_plan(
         mime_type: mime_type.to_owned(),
         has_mp4_moov: false,
         mp4_moov_after_mdat: false,
+        riff_size_patch: None,
     }
 }
 
@@ -64,6 +67,11 @@ pub(super) fn detect_format(source: &OpenedStreamFile, head: &[u8]) -> Option<&'
     if matches!(mime, "audio/flac" | "audio/x-flac") || head.starts_with(FLAC_MAGIC) {
         return Some("flac");
     }
+    if matches!(mime, "audio/wav" | "audio/wave" | "audio/x-wav")
+        || head.starts_with(WAV_RIFF) && head.get(8..12) == Some(WAV_WAVE)
+    {
+        return Some("wav");
+    }
     if matches!(
         mime,
         "video/x-matroska" | "audio/x-matroska" | "video/webm" | "audio/webm"
@@ -80,6 +88,7 @@ pub(super) fn build_plan(source: &OpenedStreamFile, format: &str) -> Result<Rewr
         "jpeg" => parse_jpeg_plan(source),
         "mp3" => parse_mp3_plan(source),
         "flac" => parse_flac_plan(source),
+        "wav" => parse_wav_plan(source),
         _ => Err(SignatureClientError::Invalid(format!(
             "No streaming media handler exists for {format}"
         ))),
@@ -92,6 +101,7 @@ pub(super) fn output_replacement(plan: &RewritePlan, payload: &str) -> Result<Op
         "JPEG" => Some(build_jpeg_signature_segment(payload)?),
         "MP3" => Some(build_mp3_signature_tag(&plan.canonical_replacement, payload)?),
         "FLAC" => Some(build_flac_signature_metadata(&plan.canonical_replacement, payload)?),
+        "WAV" => Some(build_wav_signature_chunk(payload)?),
         _ => None,
     };
     Ok(output)
@@ -607,6 +617,223 @@ fn parse_flac_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         "FLAC",
         "audio/flac",
     ))
+}
+
+
+// WAV: metadata chunks are bounded and audio data chunks are skipped by offset.
+#[derive(Clone)]
+struct WavChunk {
+    kind: [u8; 4],
+    raw: Vec<u8>,
+}
+
+fn parse_wav_info_list(data: &[u8]) -> Result<Option<(Vec<u8>, Option<String>)>> {
+    if data.len() < 4 || &data[..4] != b"INFO" {
+        return Ok(None);
+    }
+
+    let mut offset = 4usize;
+    let mut kept = Vec::new();
+    let mut signature = None;
+    let mut chunks = 0usize;
+
+    while offset < data.len() {
+        chunks += 1;
+        if chunks > MAX_MEDIA_CHUNKS {
+            return Err(SignatureClientError::Invalid(format!(
+                "WAV INFO list contains more than {MAX_MEDIA_CHUNKS} metadata chunks"
+            )));
+        }
+        if offset.checked_add(8).map(|end| end > data.len()).unwrap_or(true) {
+            return Err(SignatureClientError::Invalid("WAV INFO metadata chunk header is truncated".into()));
+        }
+        let kind = &data[offset..offset + 4];
+        let size = u32::from_le_bytes([
+            data[offset + 4],
+            data[offset + 5],
+            data[offset + 6],
+            data[offset + 7],
+        ]) as usize;
+        let padded = size.checked_add(size % 2)
+            .ok_or_else(|| SignatureClientError::Invalid("WAV metadata chunk size overflowed".into()))?;
+        let end = offset.checked_add(8)
+            .and_then(|value| value.checked_add(padded))
+            .ok_or_else(|| SignatureClientError::Invalid("WAV metadata chunk end overflowed".into()))?;
+        if end > data.len() {
+            return Err(SignatureClientError::Invalid("WAV INFO metadata chunk extends beyond its LIST boundary".into()));
+        }
+
+        if kind == b"ISIG" {
+            if signature.is_some() {
+                return Err(SignatureClientError::Invalid("WAV contains multiple Majik ISIG metadata chunks".into()));
+            }
+            if size < 4 {
+                return Err(SignatureClientError::Invalid("WAV Majik ISIG chunk is missing its payload length".into()));
+            }
+            let payload_len = u32::from_le_bytes([
+                data[offset + 8],
+                data[offset + 9],
+                data[offset + 10],
+                data[offset + 11],
+            ]) as usize;
+            if payload_len > size - 4 {
+                return Err(SignatureClientError::Invalid("WAV Majik ISIG payload length exceeds its chunk boundary".into()));
+            }
+            let payload = std::str::from_utf8(&data[offset + 12..offset + 12 + payload_len])
+                .map_err(|error| SignatureClientError::Invalid(format!("WAV Majik signature payload is not UTF-8: {error}")))?
+                .to_owned();
+            signature = Some(payload);
+        } else {
+            kept.extend_from_slice(&data[offset..end]);
+        }
+        offset = end;
+    }
+
+    let replacement = if signature.is_none() {
+        Vec::new()
+    } else if kept.is_empty() {
+        Vec::new()
+    } else {
+        let mut list_data = Vec::with_capacity(4 + kept.len());
+        list_data.extend_from_slice(b"INFO");
+        list_data.extend_from_slice(&kept);
+        let size = u32::try_from(list_data.len())
+            .map_err(|_| SignatureClientError::Invalid("WAV LIST metadata exceeds its 32-bit size field".into()))?;
+        let mut list = Vec::with_capacity(8 + list_data.len() + (list_data.len() % 2));
+        list.extend_from_slice(b"LIST");
+        list.extend_from_slice(&size.to_le_bytes());
+        list.extend_from_slice(&list_data);
+        if list_data.len() % 2 == 1 {
+            list.push(0);
+        }
+        list
+    };
+
+    Ok(Some((replacement, signature)))
+}
+
+fn parse_wav_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
+    if source.length() < 12 {
+        return Err(SignatureClientError::Invalid("WAV file is shorter than its RIFF/WAVE header".into()));
+    }
+    let header = read_at(source, 0, 12)?;
+    if &header[..4] != WAV_RIFF || &header[8..12] != WAV_WAVE {
+        return Err(SignatureClientError::Invalid("Invalid RIFF/WAVE header; RF64 is not handled by the core WAV format handler".into()));
+    }
+    if source.length() > (u32::MAX as u64).saturating_add(8) {
+        return Err(SignatureClientError::Invalid(
+            "WAV exceeds the 32-bit RIFF size limit. RF64 is not supported by the existing Majik WAV handler; use detached streaming signing.".into(),
+        ));
+    }
+
+    let mut offset = 12u64;
+    let mut chunk_count = 0usize;
+    let mut signature_rewrite: Option<(u64, u64, Vec<u8>, String)> = None;
+
+    while offset < source.length() {
+        chunk_count += 1;
+        if chunk_count > MAX_MEDIA_CHUNKS {
+            return Err(SignatureClientError::Invalid(format!(
+                "WAV contains more than {MAX_MEDIA_CHUNKS} RIFF chunks"
+            )));
+        }
+        if offset.checked_add(8).map(|end| end > source.length()).unwrap_or(true) {
+            return Err(SignatureClientError::Invalid("WAV RIFF chunk header is truncated".into()));
+        }
+        let chunk_header = read_at(source, offset, 8)?;
+        let kind = &chunk_header[..4];
+        let size = u32::from_le_bytes([
+            chunk_header[4],
+            chunk_header[5],
+            chunk_header[6],
+            chunk_header[7],
+        ]) as u64;
+        let padded = size.checked_add(size % 2)
+            .ok_or_else(|| SignatureClientError::Invalid("WAV RIFF chunk size overflowed".into()))?;
+        let end = offset.checked_add(8)
+            .and_then(|value| value.checked_add(padded))
+            .ok_or_else(|| SignatureClientError::Invalid("WAV RIFF chunk end overflowed".into()))?;
+        if end > source.length() {
+            return Err(SignatureClientError::Invalid("WAV RIFF chunk extends beyond the source file".into()));
+        }
+
+        if kind == b"LIST" && size >= 4 {
+            let list_type = read_at(source, offset + 8, 4)?;
+            if list_type.as_slice() == b"INFO" {
+                if size > MAX_MEDIA_METADATA_BYTES {
+                    return Err(file_error("fileTooLarge", "WAV INFO metadata exceeds the 32 MiB streaming metadata limit"));
+                }
+                let list_data = read_at(
+                    source,
+                    offset + 8,
+                    usize::try_from(size).map_err(|_| file_error("fileTooLarge", "WAV INFO metadata size cannot be represented"))?,
+                )?;
+                if let Some((replacement, Some(payload))) = parse_wav_info_list(&list_data)? {
+                    if signature_rewrite.is_some() {
+                        return Err(SignatureClientError::Invalid(
+                            "WAV contains multiple Majik signature LIST chunks; refusing ambiguous canonicalisation".into(),
+                        ));
+                    }
+                    signature_rewrite = Some((offset, end, replacement, payload));
+                }
+            }
+        }
+        offset = end;
+    }
+
+    if offset != source.length() {
+        return Err(SignatureClientError::Invalid("WAV contains unparsed trailing bytes".into()));
+    }
+
+    let (start, end, canonical_replacement, payload) = match signature_rewrite {
+        Some((start, end, replacement, payload)) => (start, end, replacement, Some(payload)),
+        None => (source.length(), source.length(), Vec::new(), None),
+    };
+    let mut plan = make_plan(
+        source,
+        start,
+        end,
+        canonical_replacement,
+        payload,
+        "WAV",
+        "audio/wav",
+    );
+    let canonical_len = plan.canonical_len()?;
+    let riff_size = canonical_len.checked_sub(8)
+        .ok_or_else(|| SignatureClientError::Invalid("Canonical WAV is shorter than its RIFF header".into()))?;
+    let riff_size = u32::try_from(riff_size).map_err(|_| {
+        SignatureClientError::Invalid("Canonical WAV exceeds the 32-bit RIFF size limit; RF64 is not supported".into())
+    })?;
+    plan.riff_size_patch = Some(riff_size.to_le_bytes());
+    Ok(plan)
+}
+
+fn build_wav_signature_chunk(payload: &str) -> Result<Vec<u8>> {
+    let payload_len = u32::try_from(payload.len())
+        .map_err(|_| SignatureClientError::Invalid("WAV signature payload exceeds its 32-bit size field".into()))?;
+    let padded_len = payload.len()
+        .checked_add(payload.len() % 2)
+        .ok_or_else(|| SignatureClientError::Invalid("WAV signature payload size overflowed".into()))?;
+    let mut list_data = Vec::with_capacity(4 + 8 + padded_len);
+    list_data.extend_from_slice(b"INFO");
+    list_data.extend_from_slice(b"ISIG");
+    list_data.extend_from_slice(&(4u32 + padded_len as u32).to_le_bytes());
+    list_data.extend_from_slice(&payload_len.to_le_bytes());
+    list_data.extend_from_slice(payload.as_bytes());
+    if payload.len() % 2 == 1 {
+        list_data.push(0);
+    }
+
+    let list_len = u32::try_from(list_data.len())
+        .map_err(|_| SignatureClientError::Invalid("WAV signature LIST exceeds its 32-bit size field".into()))?;
+    let mut output = Vec::with_capacity(8 + list_data.len() + (list_data.len() % 2));
+    output.extend_from_slice(b"LIST");
+    output.extend_from_slice(&list_len.to_le_bytes());
+    output.extend_from_slice(&list_data);
+    if list_data.len() % 2 == 1 {
+        output.push(0);
+    }
+    Ok(output)
 }
 
 fn build_flac_signature_metadata(canonical_prefix: &[u8], payload: &str) -> Result<Vec<u8>> {
