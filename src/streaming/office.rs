@@ -826,7 +826,7 @@ pub(super) fn build_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         has_mp4_moov: false,
         mp4_moov_after_mdat: false,
         riff_size_patch: None,
-        office_archive: Some(archive),
+        office_archive: Some(std::sync::Arc::new(archive)),
     })
 }
 
@@ -896,7 +896,7 @@ mod tests {
             plan.office_archive.as_ref().unwrap().envelope_payload(),
             Some("old-signature")
         );
-        let canonical = fs::read(plan.canonical_path()).unwrap();
+        let canonical = fs::read(plan.office_archive.as_ref().unwrap().canonical_path()).unwrap();
         let expected = MajikSignature::strip_from(&source_bytes, Some(mime)).unwrap();
         assert_eq!(canonical, expected);
 
@@ -925,7 +925,10 @@ mod tests {
                 .envelope_payload(),
             Some("new-signature")
         );
-        assert_eq!(fs::read(signed_plan.canonical_path()).unwrap(), expected);
+        assert_eq!(
+            fs::read(signed_plan.office_archive.as_ref().unwrap().canonical_path()).unwrap(),
+            expected
+        );
     }
 
     #[test]
