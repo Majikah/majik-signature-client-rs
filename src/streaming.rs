@@ -2557,6 +2557,26 @@ mod tests {
         assert!(!path.exists());
     }
 
+    #[test]
+    fn output_writer_overwrite_replaces_the_previous_file_completely() {
+        let path = std::env::temp_dir().join(format!(
+            "majik-stream-overwrite-{}.mjksig",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&path, b"previous content").unwrap();
+
+        let result = write_atomic_with(&path, true, |file| {
+            file.write_all(b"replacement content")
+                .map_err(|error| file_error("fileWriteFailed", error.to_string()))?;
+            Ok(b"replacement content".len() as u64)
+        })
+        .unwrap();
+
+        assert_eq!(result.size_bytes, b"replacement content".len() as u64);
+        assert_eq!(fs::read(&path).unwrap(), b"replacement content");
+        let _ = fs::remove_file(path);
+    }
+
     #[cfg(unix)]
     #[test]
     fn ten_gib_sparse_file_is_opened_without_materializing_its_contents() {
