@@ -1265,7 +1265,18 @@ fn parse_mp4_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     })
 }
 
-fn detect_stream_format(source: &OpenedStreamFile) -> Result<&'static str> {
+fn detect_stream_format(
+    source: &OpenedStreamFile,
+    cancellation: Option<&AtomicBool>,
+) -> Result<&'static str> {
+    if cancellation
+        .map(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        .unwrap_or(false)
+    {
+        return Err(SignatureClientError::Invalid(
+            "Streaming operation was cancelled".into(),
+        ));
+    }
     let mut file = source.try_clone_file()?;
     let head_len = usize::try_from(source.length().min(16)).unwrap_or(16);
     let head = read_exact_at(&mut file, 0, head_len, source.path())?;
@@ -1287,7 +1298,7 @@ fn detect_stream_format(source: &OpenedStreamFile) -> Result<&'static str> {
     if let Some(format) = media::detect_format(source, &head) {
         return Ok(format);
     }
-    if office::detect_office_input(source, &head)? {
+    if office::detect_office_input(source, &head, cancellation)? {
         return Ok("office");
     }
 
@@ -1329,13 +1340,16 @@ fn detect_stream_format(source: &OpenedStreamFile) -> Result<&'static str> {
     Ok("raw")
 }
 
-fn build_rewrite_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
-    let format = detect_stream_format(source)?;
+fn build_rewrite_plan(
+    source: &OpenedStreamFile,
+    cancellation: Option<&AtomicBool>,
+) -> Result<RewritePlan> {
+    let format = detect_stream_format(source, cancellation)?;
     match format {
         "pdf" => parse_pdf_plan(source),
         "mp4" => parse_mp4_plan(source),
         "png" | "jpeg" | "mp3" | "flac" | "wav" => media::build_plan(source, format),
-        "office" => office::build_plan(source),
+        "office" => office::build_plan(source, cancellation),
         _ => {
             let mut file = source.try_clone_file()?;
             let trailer = read_universal_trailer(&mut file, source.length(), source.path())?;
@@ -1734,7 +1748,7 @@ impl SignatureClient {
                 ));
             }
         }
-        let plan = build_rewrite_plan(&source)?;
+        let plan = build_rewrite_plan(&source, stream.cancellation)?;
         let (envelope, prior_content_hash) = if let Some(prior_path) = prior_file_path {
             ensure_distinct_paths(prior_path, input_path)?;
             ensure_distinct_paths(prior_path, envelope_output_path)?;
@@ -1745,7 +1759,7 @@ impl SignatureClient {
             })?;
             let prior_envelope = MajikSignatureEnvelope::from_input(prior_input)?;
             let prior_source = OpenedStreamFile::open(prior_path, None)?;
-            let prior_plan = build_rewrite_plan(&prior_source)?;
+            let prior_plan = build_rewrite_plan(&prior_source, stream.cancellation)?;
             let prior_hash =
                 verify_prior_stream(&prior_source, &prior_plan, &prior_envelope, stream)?;
             let prior_envelope = backfill_initial_file_version(prior_envelope, &prior_hash)?;
@@ -1926,7 +1940,7 @@ impl SignatureClient {
         let envelope_bytes = read_small_envelope(envelope_path.as_ref())?;
         let envelope = MajikSignatureEnvelope::from_input(EnvelopeInput::Bytes(envelope_bytes))?;
         validate_envelope_commitments(&envelope)?;
-        let plan = build_rewrite_plan(&file)?;
+        let plan = build_rewrite_plan(&file, stream.cancellation)?;
         let current_hash = bytes_to_base64(&hash_reader_for_plan(&file, &plan, stream, true)?);
         let resolved = self.resolve_signer_public_keys(target)?;
         let signer_id = target
@@ -2035,7 +2049,7 @@ impl SignatureClient {
                 ));
             }
         }
-        let plan = build_rewrite_plan(&source)?;
+        let plan = build_rewrite_plan(&source, stream.cancellation)?;
         if !matches!(
             plan.handler,
             "PDF"
@@ -2061,7 +2075,7 @@ impl SignatureClient {
             ensure_distinct_paths(prior_path, input_path)?;
             ensure_distinct_paths(prior_path, output_path)?;
             let prior_source = OpenedStreamFile::open(prior_path, None)?;
-            let prior_plan = build_rewrite_plan(&prior_source)?;
+            let prior_plan = build_rewrite_plan(&prior_source, stream.cancellation)?;
             let prior_envelope = parse_plan_envelope(&prior_plan)?.ok_or_else(|| {
                 SignatureClientError::Invalid(
                     "The prior file does not contain an embedded Majik Signature envelope.".into(),
@@ -2153,7 +2167,12 @@ impl SignatureClient {
         let embedded_payload = serialize_embedded_envelope(&envelope)?;
         let output = if let Some(office_archive) = plan.office_archive.as_ref() {
             write_atomic_with(output_path, overwrite, |destination| {
-                office::write_signed_archive(office_archive, &embedded_payload, destination)
+                office::write_signed_archive(
+                    office_archive,
+                    &embedded_payload,
+                    destination,
+                    stream.cancellation,
+                )
             })?
         } else {
             let replacement = pdf_or_mp4_output_replacement(&plan, &embedded_payload)?;
@@ -2207,7 +2226,7 @@ impl SignatureClient {
                 ));
             }
         }
-        let plan = build_rewrite_plan(&file)?;
+        let plan = build_rewrite_plan(&file, stream.cancellation)?;
         if !matches!(
             plan.handler,
             "PDF"
@@ -2371,7 +2390,7 @@ mod tests {
         bytes.extend_from_slice(&UNIVERSAL_TRAILER_MAGIC);
         fs::write(&path, &bytes).unwrap();
         let source = OpenedStreamFile::open(&path, None).unwrap();
-        let plan = build_rewrite_plan(&source).unwrap();
+        let plan = build_rewrite_plan(&source, None).unwrap();
         assert_eq!(plan.envelope_payload.as_deref(), Some(payload));
         let mut reader = RewrittenFileReader::new(source.try_clone_file().unwrap(), &plan).unwrap();
         let mut canonical = Vec::new();
@@ -2402,7 +2421,7 @@ mod tests {
         fs::write(&source_path, bytes).unwrap();
 
         let source = OpenedStreamFile::open(&source_path, Some(mime)).unwrap();
-        let plan = build_rewrite_plan(&source).unwrap();
+        let plan = build_rewrite_plan(&source, None).unwrap();
         assert_eq!(plan.handler, handler);
         let payload = "MJKSIG:CBOR:2:dGVzdA==";
         let replacement = pdf_or_mp4_output_replacement(&plan, payload).unwrap();
@@ -2422,7 +2441,7 @@ mod tests {
         fs::write(&signed_path, &signed).unwrap();
 
         let signed_source = OpenedStreamFile::open(&signed_path, Some(mime)).unwrap();
-        let signed_plan = build_rewrite_plan(&signed_source).unwrap();
+        let signed_plan = build_rewrite_plan(&signed_source, None).unwrap();
         assert_eq!(signed_plan.envelope_payload.as_deref(), Some(payload));
         let mut actual_reader =
             RewrittenFileReader::new(signed_source.try_clone_file().unwrap(), &signed_plan)
@@ -2492,7 +2511,7 @@ mod tests {
             ));
             fs::write(&path, b"\x1a\x45\xdf\xa3\x00\x00\x00\x00").unwrap();
             let source = OpenedStreamFile::open(&path, Some(mime)).unwrap();
-            let plan = build_rewrite_plan(&source).unwrap();
+            let plan = build_rewrite_plan(&source, None).unwrap();
             assert_eq!(plan.handler, "Fallback (Universal Trailer)");
             let _ = fs::remove_file(path);
         }
@@ -2517,7 +2536,7 @@ mod tests {
             ));
             fs::write(&path, bytes).unwrap();
             let source = OpenedStreamFile::open(&path, Some("video/mp4")).unwrap();
-            let plan = build_rewrite_plan(&source).unwrap();
+            let plan = build_rewrite_plan(&source, None).unwrap();
             assert_eq!(plan.mp4_moov_after_mdat, expected);
             let _ = fs::remove_file(path);
         }
