@@ -161,7 +161,7 @@ fn validate_base(
 
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ`, the same shape as JS `Date.prototype.toISOString()`.
 pub(crate) fn now_iso() -> String {
-    let z = Timestamp::now().to_zoned(jiff::tz::TimeZone::UTC);
+    let z = Timestamp::now().to_zoned_datetime(jiff::tz::TimeZone::UTC);
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
         z.year(),
