@@ -1066,6 +1066,37 @@ mod tests {
     }
 
     #[test]
+    fn office_archive_staging_observes_preexisting_cancellation() {
+        let workspace = TempWorkspace::create().unwrap();
+        let path = workspace.path().join("cancelled.docx");
+        let entry_path = workspace.path().join("entry.xml");
+        fs::write(&entry_path, b"<document/>").unwrap();
+        let entries = vec![StagedEntry {
+            name: "word/document.xml".to_owned(),
+            path: entry_path,
+            size: b"<document/>".len() as u64,
+            crc32: crc32(b"<document/>"),
+        }];
+        let mut archive = File::create(&path).unwrap();
+        write_stored_archive(&entries, None, &mut archive, &workspace, None).unwrap();
+        archive.sync_all().unwrap();
+        drop(archive);
+
+        let source = OpenedStreamFile::open(
+            &path,
+            Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+        )
+        .unwrap();
+        let cancelled = AtomicBool::new(true);
+        let result = build_plan(&source, Some(&cancelled));
+        assert!(matches!(
+            result,
+            Err(SignatureClientError::Invalid(message))
+                if message == "Streaming operation was cancelled"
+        ));
+    }
+
+    #[test]
     fn office_writer_rejects_staged_entry_mutations_before_publication() {
         let workspace = TempWorkspace::create().unwrap();
         let path = workspace.path().join("entry.bin");
