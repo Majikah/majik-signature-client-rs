@@ -45,13 +45,13 @@ jobs:
       - run: cargo doc --workspace --no-deps
 
   msrv:
-    name: Minimum supported Rust (1.89)
+    name: Minimum supported Rust (1.92)
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@1.89.0
+      - uses: dtolnay/rust-toolchain@1.92.0
         with:
           components: clippy
 
