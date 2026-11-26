@@ -926,7 +926,14 @@ mod tests {
             Some("new-signature")
         );
         assert_eq!(
-            fs::read(signed_plan.office_archive.as_ref().unwrap().canonical_path()).unwrap(),
+            fs::read(
+                signed_plan
+                    .office_archive
+                    .as_ref()
+                    .unwrap()
+                    .canonical_path()
+            )
+            .unwrap(),
             expected
         );
     }
