@@ -1141,13 +1141,9 @@ mod tests {
 
         let source = OpenedStreamFile::open(&path, Some("image/jpeg")).unwrap();
         let plan = build_plan(&source, "jpeg").unwrap();
-        assert_eq!(
-            plan.envelope_payload.as_deref(),
-            Some("existing-envelope")
-        );
+        assert_eq!(plan.envelope_payload.as_deref(), Some("existing-envelope"));
 
-        let mut reader =
-            RewrittenFileReader::new(source.try_clone_file().unwrap(), &plan).unwrap();
+        let mut reader = RewrittenFileReader::new(source.try_clone_file().unwrap(), &plan).unwrap();
         let mut streamed_canonical = Vec::new();
         reader.read_to_end(&mut streamed_canonical).unwrap();
         let core_canonical = MajikSignature::strip_from(&jpeg, Some("image/jpeg")).unwrap();
