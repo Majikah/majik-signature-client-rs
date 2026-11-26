@@ -3,8 +3,9 @@
 //! These APIs are intentionally separate from the legacy `FileInput::load()` path, which
 //! materialises inputs into `Vec<u8>` and keeps its existing 1 GiB safety ceiling. Streaming
 //! operations accept native paths, use fixed-size buffers, and never return the source file as
-//! base64. Container rewriting is currently implemented for PDF and ISO-BMFF (MP4/MOV): only
-//! the small container metadata is held in memory; media payloads are copied unchanged.
+//! base64. Format-aware rewriting covers PDF, ISO-BMFF (MP4/MOV), PNG/JPEG, MP3, FLAC,
+//! WAV, and universal-trailer containers such as Matroska/WebM. Only bounded container metadata
+//! is held in memory; large image, audio, and video payloads are copied and hashed in chunks.
 
 mod media;
 
@@ -2022,7 +2023,7 @@ impl SignatureClient {
                 | "Fallback (Universal Trailer)"
         ) {
             return Err(SignatureClientError::Invalid(
-                "Large-file embedded signing is currently supported for PDF, MP4/MOV, PNG, JPEG, MP3, FLAC, and universal-trailer formats. This specialised container is not yet supported by the streaming writer.".into(),
+                "Large-file embedded signing is currently supported for PDF, MP4/MOV, PNG, JPEG, MP3, FLAC, WAV, and universal-trailer formats. This specialised container is not yet supported by the streaming writer.".into(),
             ));
         }
         if plan.has_mp4_moov && !plan.mp4_moov_after_mdat {
