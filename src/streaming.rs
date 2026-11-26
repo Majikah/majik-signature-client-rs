@@ -1660,6 +1660,7 @@ impl SignatureClient {
     /// Create a detached revision after verifying the previous file path against its existing
     /// sidecar envelope. The previous file itself is read and hashed incrementally.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn sign_file_detached_stream_with_prior(
         &mut self,
         input_path: impl AsRef<Path>,
@@ -1681,6 +1682,7 @@ impl SignatureClient {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     #[allow(clippy::too_many_arguments)]
     fn sign_file_detached_stream_inner(
         &mut self,
@@ -1961,6 +1963,7 @@ impl SignatureClient {
     /// The prior file is never loaded into memory; its embedded envelope and content are checked
     /// with the same reader-based verification used by normal streaming verification.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn sign_file_embedded_stream_with_prior(
         &mut self,
         input_path: impl AsRef<Path>,
@@ -1983,6 +1986,7 @@ impl SignatureClient {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     fn sign_file_embedded_stream_inner(
         &mut self,
         input_path: &Path,
@@ -1999,7 +2003,7 @@ impl SignatureClient {
             ));
         }
         stream.validate()?;
-        let mut source = OpenedStreamFile::open(&input_path, options.mime_type.as_deref())?;
+        let mut source = OpenedStreamFile::open(input_path, options.mime_type.as_deref())?;
         ensure_distinct_paths(source.path(), output_path)?;
         if let Some(max) = stream.max_bytes {
             if source.length() > max {
