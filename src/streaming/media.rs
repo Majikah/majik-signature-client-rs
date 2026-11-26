@@ -1066,7 +1066,6 @@ fn build_flac_signature_metadata(canonical_prefix: &[u8], payload: &str) -> Resu
     }
     Ok(output)
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
