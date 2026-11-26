@@ -1477,6 +1477,13 @@ fn verify_prior_stream(
 ) -> Result<String> {
     validate_envelope_commitments(envelope)?;
     let content_hash = bytes_to_base64(&hash_reader_for_plan(source, plan, stream, false)?);
+    if let Some(latest) = envelope.last_file_version() {
+        if latest.content_hash != content_hash {
+            return Err(SignatureClientError::Invalid(
+                "The prior file does not match the latest fileVersions entry; refusing to branch a new revision from an older version.".into(),
+            ));
+        }
+    }
     let selected = select_signature_for_content(envelope, &content_hash, None).ok_or_else(|| {
         SignatureClientError::Invalid(
             "The prior file does not match any signature in its envelope; refusing to create a revision."
@@ -1615,11 +1622,9 @@ fn sign_event_and_history(
 }
 
 impl SignatureClient {
-    /// Sign a native path into a detached `.mjksig` sidecar. Existing embedded PDF/MP4 signatures
-    /// are removed from the logical input before hashing, matching the format handlers. Existing
-    /// `prior_file` revision flows remain on the legacy in-memory API until the core revision API
-    /// accepts path/reader inputs.
     /// Sign a native file path into a detached .mjksig sidecar using bounded memory.
+    /// Use `sign_file_detached_stream_with_prior` to verify and extend a previous file version
+    /// without loading that previous file into memory.
     pub fn sign_file_detached_stream(
         &mut self,
         input_path: impl AsRef<Path>,
@@ -1897,12 +1902,12 @@ impl SignatureClient {
         Ok(self.finish_file_verify(result, tsa, envelope.is_sealed(), true, source))
     }
 
-    /// Sign and embed a signature in a PDF or MP4/MOV path without materialising the media file.
-    /// PDF uses its append-only signature block; MP4/MOV rewrites only `moov/udta/majk`, leaving
-    /// large `mdat` payloads streamed and byte-identical. MP4/MOV embedding requires `mdat` to
-    /// precede a final `moov` box so absolute media chunk offsets remain valid. Other formats remain on the
-    /// legacy in-memory handler until their container writers expose reader/writer APIs.
     /// Sign and embed a file using bounded-memory native path I/O.
+    ///
+    /// Container metadata is the only part buffered: PDF and MP4/MOV rewrite their signature
+    /// structures; PNG/JPEG, MP3/FLAC/WAV use their existing metadata layouts; Matroska/WebM and
+    /// unknown fallback formats use the core universal trailer. MP4/MOV embedding is restricted
+    /// to layouts where a final `moov` follows `mdat`, avoiding unsafe media-offset rebasing.
     pub fn sign_file_embedded_stream(
         &mut self,
         input_path: impl AsRef<Path>,
@@ -2109,7 +2114,7 @@ impl SignatureClient {
         })
     }
 
-    /// Verify an embedded PDF or MP4/MOV path by reading its canonical unsigned representation.
+    /// Verify an embedded media/document path by reading its canonical unsigned representation.
     pub fn verify_file_embedded_stream(
         &mut self,
         input_path: impl AsRef<Path>,
@@ -2299,14 +2304,104 @@ mod tests {
         assert!(parse_mp4_boxes(&data).is_err());
     }
 
+    fn assert_media_round_trip(mime: &str, extension: &str, bytes: &[u8], handler: &str) {
+        let source_path = std::env::temp_dir().join(format!(
+            "majik-stream-media-source-{}.{extension}",
+            uuid::Uuid::new_v4()
+        ));
+        let signed_path = std::env::temp_dir().join(format!(
+            "majik-stream-media-signed-{}.{extension}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&source_path, bytes).unwrap();
+
+        let source = OpenedStreamFile::open(&source_path, Some(mime)).unwrap();
+        let plan = build_rewrite_plan(&source).unwrap();
+        assert_eq!(plan.handler, handler);
+        let payload = "MJKSIG:CBOR:2:dGVzdA==";
+        let replacement = pdf_or_mp4_output_replacement(&plan, payload).unwrap();
+        let original = fs::read(&source_path).unwrap();
+        let mut signed = Vec::with_capacity(
+            original.len() - (plan.replace_end - plan.replace_start) as usize
+                + replacement.len()
+                + plan.canonical_replacement.len(),
+        );
+        signed.extend_from_slice(&original[..plan.replace_start as usize]);
+        signed.extend_from_slice(&replacement);
+        signed.extend_from_slice(&original[plan.replace_end as usize..]);
+        if handler == "WAV" {
+            let riff_size = u32::try_from(signed.len() - 8).unwrap();
+            signed[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        }
+        fs::write(&signed_path, &signed).unwrap();
+
+        let signed_source = OpenedStreamFile::open(&signed_path, Some(mime)).unwrap();
+        let signed_plan = build_rewrite_plan(&signed_source).unwrap();
+        assert_eq!(signed_plan.envelope_payload.as_deref(), Some(payload));
+        let mut actual_reader =
+            RewrittenFileReader::new(signed_source.try_clone_file().unwrap(), &signed_plan).unwrap();
+        let mut actual_canonical = Vec::new();
+        actual_reader.read_to_end(&mut actual_canonical).unwrap();
+
+        let mut expected_reader =
+            RewrittenFileReader::new(source.try_clone_file().unwrap(), &plan).unwrap();
+        let mut expected_canonical = Vec::new();
+        expected_reader.read_to_end(&mut expected_canonical).unwrap();
+        assert_eq!(actual_canonical, expected_canonical, "{handler} canonical bytes changed");
+
+        let _ = fs::remove_file(source_path);
+        let _ = fs::remove_file(signed_path);
+    }
+
     #[test]
-    fn specialised_image_handlers_are_not_silently_treated_as_raw() {
-        let path =
-            std::env::temp_dir().join(format!("majik-stream-png-{}.png", uuid::Uuid::new_v4()));
-        fs::write(&path, b"\x89PNG\r\n\x1a\ncontent").unwrap();
-        let source = OpenedStreamFile::open(&path, Some("image/png")).unwrap();
-        assert!(detect_stream_format(&source).is_err());
-        let _ = fs::remove_file(path);
+    fn common_image_and_audio_containers_round_trip_through_streaming_handlers() {
+        let mut png = b"\x89PNG\r\n\x1a\n".to_vec();
+        png.extend_from_slice(&13u32.to_be_bytes());
+        png.extend_from_slice(b"IHDR");
+        png.extend_from_slice(&[0; 13]);
+        png.extend_from_slice(&0u32.to_be_bytes());
+        png.extend_from_slice(&0u32.to_be_bytes());
+        png.extend_from_slice(b"IEND");
+        png.extend_from_slice(&0u32.to_be_bytes());
+        assert_media_round_trip("image/png", "png", &png, "PNG");
+
+        assert_media_round_trip("image/jpeg", "jpg", &[0xff, 0xd8, 0xff, 0xd9], "JPEG");
+        assert_media_round_trip("audio/mpeg", "mp3", &[0xff, 0xfb, 0x90, 0x64, 0, 0, 0], "MP3");
+
+        let mut flac = b"fLaC".to_vec();
+        flac.extend_from_slice(&[0x80, 0, 0, 0]);
+        flac.extend_from_slice(&[0xff, 0xf8, 0x00, 0x00]);
+        assert_media_round_trip("audio/flac", "flac", &flac, "FLAC");
+
+        let mut wav = b"RIFF\0\0\0\0WAVE".to_vec();
+        wav.extend_from_slice(b"fmt ");
+        wav.extend_from_slice(&16u32.to_le_bytes());
+        wav.extend_from_slice(&[0; 16]);
+        wav.extend_from_slice(b"data");
+        wav.extend_from_slice(&4u32.to_le_bytes());
+        wav.extend_from_slice(&[1, 2, 3, 4]);
+        let riff_size = u32::try_from(wav.len() - 8).unwrap();
+        wav[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        assert_media_round_trip("audio/wav", "wav", &wav, "WAV");
+    }
+
+    #[test]
+    fn matroska_and_webm_use_the_streamed_universal_trailer() {
+        for (mime, extension) in [
+            ("video/x-matroska", "mkv"),
+            ("video/webm", "webm"),
+        ] {
+            let path = std::env::temp_dir().join(format!(
+                "majik-stream-ebml-{}.{}",
+                uuid::Uuid::new_v4(),
+                extension
+            ));
+            fs::write(&path, b"\x1a\x45\xdf\xa3\x00\x00\x00\x00").unwrap();
+            let source = OpenedStreamFile::open(&path, Some(mime)).unwrap();
+            let plan = build_rewrite_plan(&source).unwrap();
+            assert_eq!(plan.handler, "Fallback (Universal Trailer)");
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[test]
