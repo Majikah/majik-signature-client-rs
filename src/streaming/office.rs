@@ -1003,8 +1003,6 @@ mod tests {
         );
     }
 
-
-
     #[test]
     fn office_writer_rejects_staged_entry_mutations_before_publication() {
         let workspace = TempWorkspace::create().unwrap();
