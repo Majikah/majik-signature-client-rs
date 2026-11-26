@@ -1799,6 +1799,7 @@ impl SignatureClient {
     /// large `mdat` payloads streamed and byte-identical. MP4/MOV embedding requires `mdat` to
     /// precede a final `moov` box so absolute media chunk offsets remain valid. Other formats remain on the
     /// legacy in-memory handler until their container writers expose reader/writer APIs.
+    /// Sign and embed a file using bounded-memory native path I/O.
     pub fn sign_file_embedded_stream(
         &mut self,
         input_path: impl AsRef<Path>,
@@ -1808,9 +1809,54 @@ impl SignatureClient {
         stream: &mut StreamingFileOptions<'_>,
         overwrite: bool,
     ) -> Result<StreamingEmbeddedSignResult> {
+        self.sign_file_embedded_stream_inner(
+            input_path.as_ref(),
+            output_path.as_ref(),
+            options,
+            context,
+            stream,
+            overwrite,
+            None,
+        )
+    }
+
+    /// Sign a new file version after verifying the prior signed file from a native path.
+    /// The prior file is never loaded into memory; its embedded envelope and content are checked
+    /// with the same reader-based verification used by normal streaming verification.
+    pub fn sign_file_embedded_stream_with_prior(
+        &mut self,
+        input_path: impl AsRef<Path>,
+        output_path: impl AsRef<Path>,
+        prior_signed_file_path: impl AsRef<Path>,
+        options: &SignFileOptions,
+        context: &OpContext,
+        stream: &mut StreamingFileOptions<'_>,
+        overwrite: bool,
+    ) -> Result<StreamingEmbeddedSignResult> {
+        self.sign_file_embedded_stream_inner(
+            input_path.as_ref(),
+            output_path.as_ref(),
+            options,
+            context,
+            stream,
+            overwrite,
+            Some(prior_signed_file_path.as_ref()),
+        )
+    }
+
+    fn sign_file_embedded_stream_inner(
+        &mut self,
+        input_path: &Path,
+        output_path: &Path,
+        options: &SignFileOptions,
+        context: &OpContext,
+        stream: &mut StreamingFileOptions<'_>,
+        overwrite: bool,
+        prior_signed_file_path: Option<&Path>,
+    ) -> Result<StreamingEmbeddedSignResult> {
         if options.prior_signed_file.is_some() {
             return Err(SignatureClientError::Invalid(
-                "Streaming embedded revisions with priorSignedFile are not available yet. Use the legacy in-memory API for this revision.".into(),
+                "For streaming revisions, pass priorSignedFile as a native path using sign_file_embedded_stream_with_prior; the in-memory priorSignedFile field is not used by streaming APIs.".into(),
             ));
         }
         stream.validate()?;
@@ -1835,7 +1881,21 @@ impl SignatureClient {
                 "This MP4/MOV places its moov metadata before media data. Expanding moov can shift absolute media chunk offsets; use detached streaming signing or a file with moov after mdat until chunk-offset rebasing is available.".into(),
             ));
         }
-        let envelope = parse_plan_envelope(&plan)?.unwrap_or_else(MajikSignatureEnvelope::empty);
+        let envelope = if let Some(prior_path) = prior_signed_file_path {
+            ensure_distinct_paths(prior_path, input_path)?;
+            ensure_distinct_paths(prior_path, output_path)?;
+            let prior_source = OpenedStreamFile::open(prior_path, None)?;
+            let prior_plan = build_rewrite_plan(&prior_source)?;
+            let prior_envelope = parse_plan_envelope(&prior_plan)?.ok_or_else(|| {
+                SignatureClientError::Invalid(
+                    "The prior file does not contain an embedded Majik Signature envelope.".into(),
+                )
+            })?;
+            let prior_hash = verify_prior_stream(&prior_source, &prior_plan, &prior_envelope, stream)?;
+            backfill_initial_file_version(prior_envelope, &prior_hash)?
+        } else {
+            parse_plan_envelope(&plan)?.unwrap_or_else(MajikSignatureEnvelope::empty)
+        };
         let digest = hash_reader_for_plan(&source, &plan, stream, true)?;
         let content_hash = bytes_to_base64(&digest);
         check_envelope_before_signing(&envelope, &content_hash)?;
