@@ -2594,6 +2594,30 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    #[test]
+    fn configured_max_bytes_also_applies_to_revision_prior_files() {
+        let path = std::env::temp_dir().join(format!(
+            "majik-stream-prior-limit-{}.bin",
+            uuid::Uuid::new_v4()
+        ));
+        fs::write(&path, b"prior file").unwrap();
+        let source = OpenedStreamFile::open(&path, None).unwrap();
+        let stream = StreamingFileOptions {
+            max_bytes: Some(4),
+            ..Default::default()
+        };
+
+        let result = validate_stream_input_size(&source, &stream);
+        assert!(matches!(
+            result,
+            Err(SignatureClientError::FileInput {
+                kind: "fileTooLarge",
+                ..
+            })
+        ));
+        let _ = fs::remove_file(path);
+    }
+
     #[cfg(unix)]
     #[test]
     fn ten_gib_sparse_file_is_opened_without_materializing_its_contents() {
