@@ -99,8 +99,14 @@ pub(super) fn output_replacement(plan: &RewritePlan, payload: &str) -> Result<Op
     let output = match plan.handler {
         "PNG" => Some(build_png_signature_chunk(payload)?),
         "JPEG" => Some(build_jpeg_signature_segment(payload)?),
-        "MP3" => Some(build_mp3_signature_tag(&plan.canonical_replacement, payload)?),
-        "FLAC" => Some(build_flac_signature_metadata(&plan.canonical_replacement, payload)?),
+        "MP3" => Some(build_mp3_signature_tag(
+            &plan.canonical_replacement,
+            payload,
+        )?),
+        "FLAC" => Some(build_flac_signature_metadata(
+            &plan.canonical_replacement,
+            payload,
+        )?),
         "WAV" => Some(build_wav_signature_chunk(payload)?),
         _ => None,
     };
@@ -118,7 +124,9 @@ fn parse_png_itxt(data: &[u8]) -> Result<Option<String>> {
 
     let mut cursor = keyword_end + 1;
     if data.len() < cursor + 2 {
-        return Err(SignatureClientError::Invalid("PNG Majik iTXt metadata is truncated".into()));
+        return Err(SignatureClientError::Invalid(
+            "PNG Majik iTXt metadata is truncated".into(),
+        ));
     }
     if data[cursor] != 0 || data[cursor + 1] != 0 {
         return Err(SignatureClientError::Invalid(
@@ -130,22 +138,29 @@ fn parse_png_itxt(data: &[u8]) -> Result<Option<String>> {
         .iter()
         .position(|byte| *byte == 0)
         .map(|index| cursor + index)
-        .ok_or_else(|| SignatureClientError::Invalid("PNG iTXt language field is malformed".into()))?;
+        .ok_or_else(|| {
+            SignatureClientError::Invalid("PNG iTXt language field is malformed".into())
+        })?;
     cursor = language_end + 1;
     let translated_end = data[cursor..]
         .iter()
         .position(|byte| *byte == 0)
         .map(|index| cursor + index)
-        .ok_or_else(|| SignatureClientError::Invalid("PNG iTXt translated keyword is malformed".into()))?;
+        .ok_or_else(|| {
+            SignatureClientError::Invalid("PNG iTXt translated keyword is malformed".into())
+        })?;
     cursor = translated_end + 1;
-    let text = std::str::from_utf8(&data[cursor..])
-        .map_err(|error| SignatureClientError::Invalid(format!("PNG signature payload is not UTF-8: {error}")))?;
+    let text = std::str::from_utf8(&data[cursor..]).map_err(|error| {
+        SignatureClientError::Invalid(format!("PNG signature payload is not UTF-8: {error}"))
+    })?;
     Ok(Some(text.to_owned()))
 }
 
 fn parse_png_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     if source.length() < 8 || read_at(source, 0, 8)?.as_slice() != PNG_SIGNATURE {
-        return Err(SignatureClientError::Invalid("Invalid PNG signature".into()));
+        return Err(SignatureClientError::Invalid(
+            "Invalid PNG signature".into(),
+        ));
     }
 
     let mut offset = 8u64;
@@ -160,8 +175,14 @@ fn parse_png_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
                 "PNG contains more than {MAX_MEDIA_CHUNKS} chunks"
             )));
         }
-        if offset.checked_add(12).map(|end| end > source.length()).unwrap_or(true) {
-            return Err(SignatureClientError::Invalid("PNG chunk header is truncated".into()));
+        if offset
+            .checked_add(12)
+            .map(|end| end > source.length())
+            .unwrap_or(true)
+        {
+            return Err(SignatureClientError::Invalid(
+                "PNG chunk header is truncated".into(),
+            ));
         }
         let header = read_at(source, offset, 8)?;
         let data_len = u32::from_be_bytes([header[0], header[1], header[2], header[3]]) as u64;
@@ -171,7 +192,9 @@ fn parse_png_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
             .and_then(|value| value.checked_add(data_len))
             .ok_or_else(|| SignatureClientError::Invalid("PNG chunk size overflowed".into()))?;
         if end > source.length() {
-            return Err(SignatureClientError::Invalid("PNG chunk extends beyond the source file".into()));
+            return Err(SignatureClientError::Invalid(
+                "PNG chunk extends beyond the source file".into(),
+            ));
         }
 
         if kind == b"iTXt" && data_len >= (PNG_KEYWORD.len() + 5) as u64 {
@@ -180,13 +203,17 @@ fn parse_png_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
             let probe = read_at(source, offset + 8, probe_len)?;
             if probe.starts_with(PNG_KEYWORD) && probe.get(PNG_KEYWORD.len()) == Some(&0) {
                 if data_len > MAX_EMBEDDED_ENVELOPE_BYTES {
-                    return Err(file_error("fileTooLarge", "PNG signature metadata exceeds 16 MiB"));
+                    return Err(file_error(
+                        "fileTooLarge",
+                        "PNG signature metadata exceeds 16 MiB",
+                    ));
                 }
                 let data = read_at(
                     source,
                     offset + 8,
-                    usize::try_from(data_len)
-                        .map_err(|_| file_error("fileTooLarge", "PNG metadata length is unsupported"))?,
+                    usize::try_from(data_len).map_err(|_| {
+                        file_error("fileTooLarge", "PNG metadata length is unsupported")
+                    })?,
                 )?;
                 if let Some(payload) = parse_png_itxt(&data)? {
                     if signature.is_some() {
@@ -201,7 +228,9 @@ fn parse_png_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
 
         if kind == b"IEND" {
             if data_len != 0 {
-                return Err(SignatureClientError::Invalid("PNG IEND chunk must be empty".into()));
+                return Err(SignatureClientError::Invalid(
+                    "PNG IEND chunk must be empty".into(),
+                ));
             }
             iend_offset = Some(offset);
             break;
@@ -222,7 +251,15 @@ fn parse_png_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         }
         None => (iend, iend, None),
     };
-    Ok(make_plan(source, start, end, Vec::new(), payload, "PNG", "image/png"))
+    Ok(make_plan(
+        source,
+        start,
+        end,
+        Vec::new(),
+        payload,
+        "PNG",
+        "image/png",
+    ))
 }
 
 fn build_png_signature_chunk(payload: &str) -> Result<Vec<u8>> {
@@ -230,8 +267,9 @@ fn build_png_signature_chunk(payload: &str) -> Result<Vec<u8>> {
     data.extend_from_slice(PNG_KEYWORD);
     data.extend_from_slice(&[0, 0, 0, 0, 0]);
     data.extend_from_slice(payload.as_bytes());
-    let data_len = u32::try_from(data.len())
-        .map_err(|_| SignatureClientError::Invalid("PNG iTXt chunk exceeds its 32-bit length field".into()))?;
+    let data_len = u32::try_from(data.len()).map_err(|_| {
+        SignatureClientError::Invalid("PNG iTXt chunk exceeds its 32-bit length field".into())
+    })?;
 
     let mut crc_input = Vec::with_capacity(4 + data.len());
     crc_input.extend_from_slice(b"iTXt");
@@ -261,12 +299,18 @@ fn crc32(bytes: &[u8]) -> u32 {
 // JPEG: Majik's APP15 segment is placed directly after SOI.
 fn parse_jpeg_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     if source.length() < 3 || read_at(source, 0, 2)?.as_slice() != JPEG_SOI {
-        return Err(SignatureClientError::Invalid("Invalid JPEG SOI marker".into()));
+        return Err(SignatureClientError::Invalid(
+            "Invalid JPEG SOI marker".into(),
+        ));
     }
     let mut offset = 2u64;
     let mut signature: Option<(u64, u64, String)> = None;
 
-    while offset.checked_add(2).map(|end| end <= source.length()).unwrap_or(false) {
+    while offset
+        .checked_add(2)
+        .map(|end| end <= source.length())
+        .unwrap_or(false)
+    {
         let marker_bytes = read_at(source, offset, 2)?;
         if marker_bytes[0] != 0xff {
             break;
@@ -279,25 +323,36 @@ fn parse_jpeg_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
             offset += 2;
             continue;
         }
-        if offset.checked_add(4).map(|end| end > source.length()).unwrap_or(true) {
-            return Err(SignatureClientError::Invalid("JPEG segment header is truncated".into()));
+        if offset
+            .checked_add(4)
+            .map(|end| end > source.length())
+            .unwrap_or(true)
+        {
+            return Err(SignatureClientError::Invalid(
+                "JPEG segment header is truncated".into(),
+            ));
         }
         let header = read_at(source, offset, 4)?;
         let segment_len = u16::from_be_bytes([header[2], header[3]]) as u64;
         if segment_len < 2 {
-            return Err(SignatureClientError::Invalid("JPEG segment length is invalid".into()));
+            return Err(SignatureClientError::Invalid(
+                "JPEG segment length is invalid".into(),
+            ));
         }
         let end = offset
             .checked_add(2)
             .and_then(|value| value.checked_add(segment_len))
             .ok_or_else(|| SignatureClientError::Invalid("JPEG segment size overflowed".into()))?;
         if end > source.length() {
-            return Err(SignatureClientError::Invalid("JPEG segment extends beyond the file".into()));
+            return Err(SignatureClientError::Invalid(
+                "JPEG segment extends beyond the file".into(),
+            ));
         }
 
         if marker == 0xef && segment_len >= (2 + JPEG_MAJIK_IDENTIFIER.len()) as u64 {
-            let data_len = usize::try_from(segment_len - 2)
-                .map_err(|_| SignatureClientError::Invalid("JPEG APP15 metadata is too large".into()))?;
+            let data_len = usize::try_from(segment_len - 2).map_err(|_| {
+                SignatureClientError::Invalid("JPEG APP15 metadata is too large".into())
+            })?;
             let data = read_at(source, offset + 4, data_len)?;
             if data.starts_with(JPEG_MAJIK_IDENTIFIER) {
                 if offset != 2 {
@@ -306,10 +361,16 @@ fn parse_jpeg_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
                     ));
                 }
                 if signature.is_some() {
-                    return Err(SignatureClientError::Invalid("JPEG contains duplicate Majik APP15 segments".into()));
+                    return Err(SignatureClientError::Invalid(
+                        "JPEG contains duplicate Majik APP15 segments".into(),
+                    ));
                 }
                 let payload = std::str::from_utf8(&data[JPEG_MAJIK_IDENTIFIER.len()..])
-                    .map_err(|error| SignatureClientError::Invalid(format!("JPEG signature payload is not UTF-8: {error}")))?
+                    .map_err(|error| {
+                        SignatureClientError::Invalid(format!(
+                            "JPEG signature payload is not UTF-8: {error}"
+                        ))
+                    })?
                     .to_owned();
                 signature = Some((offset, end, payload));
             }
@@ -324,7 +385,15 @@ fn parse_jpeg_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     let (start, end, payload) = signature
         .map(|(start, end, payload)| (start, end, Some(payload)))
         .unwrap_or((2, 2, None));
-    Ok(make_plan(source, start, end, Vec::new(), payload, "JPEG", "image/jpeg"))
+    Ok(make_plan(
+        source,
+        start,
+        end,
+        Vec::new(),
+        payload,
+        "JPEG",
+        "image/jpeg",
+    ))
 }
 
 fn build_jpeg_signature_segment(payload: &str) -> Result<Vec<u8>> {
@@ -333,7 +402,9 @@ fn build_jpeg_signature_segment(payload: &str) -> Result<Vec<u8>> {
         .checked_add(payload.len())
         .ok_or_else(|| SignatureClientError::Invalid("JPEG signature size overflowed".into()))?;
     let segment_len = u16::try_from(data_len + 2).map_err(|_| {
-        SignatureClientError::Invalid("JPEG APP15 signature exceeds the 65,535-byte segment limit".into())
+        SignatureClientError::Invalid(
+            "JPEG APP15 signature exceeds the 65,535-byte segment limit".into(),
+        )
     })?;
     let mut output = Vec::with_capacity(4 + data_len);
     output.extend_from_slice(JPEG_APP15);
@@ -346,7 +417,9 @@ fn build_jpeg_signature_segment(payload: &str) -> Result<Vec<u8>> {
 // MP3: only the bounded ID3v2 tag is parsed; MPEG audio frames are streamed unchanged.
 fn read_syncsafe(bytes: &[u8]) -> Result<usize> {
     if bytes.len() != 4 || bytes.iter().any(|byte| byte & 0x80 != 0) {
-        return Err(SignatureClientError::Invalid("Invalid ID3 syncsafe integer".into()));
+        return Err(SignatureClientError::Invalid(
+            "Invalid ID3 syncsafe integer".into(),
+        ));
     }
     Ok(((bytes[0] as usize) << 21)
         | ((bytes[1] as usize) << 14)
@@ -356,7 +429,9 @@ fn read_syncsafe(bytes: &[u8]) -> Result<usize> {
 
 fn write_syncsafe(value: usize) -> Result<[u8; 4]> {
     if value > 0x0fff_ffff {
-        return Err(SignatureClientError::Invalid("ID3 tag exceeds its 28-bit size limit".into()));
+        return Err(SignatureClientError::Invalid(
+            "ID3 tag exceeds its 28-bit size limit".into(),
+        ));
     }
     Ok([
         ((value >> 21) & 0x7f) as u8,
@@ -379,20 +454,32 @@ fn read_txxx_signature(data: &[u8]) -> Option<Result<String>> {
     if data.first() != Some(&3) {
         return None;
     }
-    let separator = data[1..].iter().position(|byte| *byte == 0).map(|i| i + 1)?;
+    let separator = data[1..]
+        .iter()
+        .position(|byte| *byte == 0)
+        .map(|i| i + 1)?;
     if &data[1..separator] != ID3_DESCRIPTION {
         return None;
     }
     Some(
-        String::from_utf8(data[separator + 1..].to_vec())
-            .map_err(|error| SignatureClientError::Invalid(format!("MP3 signature frame is not UTF-8: {error}"))),
+        String::from_utf8(data[separator + 1..].to_vec()).map_err(|error| {
+            SignatureClientError::Invalid(format!("MP3 signature frame is not UTF-8: {error}"))
+        }),
     )
 }
 
 fn parse_mp3_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     let has_id3 = source.length() >= 10 && read_at(source, 0, 3)?.as_slice() == b"ID3";
     if !has_id3 {
-        return Ok(make_plan(source, 0, 0, Vec::new(), None, "MP3", "audio/mpeg"));
+        return Ok(make_plan(
+            source,
+            0,
+            0,
+            Vec::new(),
+            None,
+            "MP3",
+            "audio/mpeg",
+        ));
     }
 
     let header = read_at(source, 0, 10)?;
@@ -409,18 +496,24 @@ fn parse_mp3_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     }
     let tag_size = read_syncsafe(&header[6..10])?;
     if tag_size as u64 > MAX_MEDIA_METADATA_BYTES {
-        return Err(file_error("fileTooLarge", "MP3 ID3 metadata exceeds the 32 MiB limit"));
+        return Err(file_error(
+            "fileTooLarge",
+            "MP3 ID3 metadata exceeds the 32 MiB limit",
+        ));
     }
     let tag_end = 10u64
         .checked_add(tag_size as u64)
         .ok_or_else(|| SignatureClientError::Invalid("ID3 tag size overflowed".into()))?;
     if tag_end > source.length() {
-        return Err(SignatureClientError::Invalid("ID3 tag extends beyond the MP3 file".into()));
+        return Err(SignatureClientError::Invalid(
+            "ID3 tag extends beyond the MP3 file".into(),
+        ));
     }
     let tag = read_at(
         source,
         0,
-        usize::try_from(tag_end).map_err(|_| file_error("fileTooLarge", "ID3 tag size is unsupported"))?,
+        usize::try_from(tag_end)
+            .map_err(|_| file_error("fileTooLarge", "ID3 tag size is unsupported"))?,
     )?;
 
     let mut offset = 10usize;
@@ -437,7 +530,10 @@ fn parse_mp3_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
             read_syncsafe(&tag[offset + 4..offset + 8])?
         } else {
             let size = u32::from_be_bytes([
-                tag[offset + 4], tag[offset + 5], tag[offset + 6], tag[offset + 7],
+                tag[offset + 4],
+                tag[offset + 5],
+                tag[offset + 6],
+                tag[offset + 7],
             ]);
             if size >= 0x8000_0000 {
                 break;
@@ -449,7 +545,9 @@ fn parse_mp3_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
             .and_then(|value| value.checked_add(frame_size))
             .ok_or_else(|| SignatureClientError::Invalid("ID3 frame size overflowed".into()))?;
         if frame_end > tag.len() {
-            return Err(SignatureClientError::Invalid("ID3 frame extends beyond the declared tag".into()));
+            return Err(SignatureClientError::Invalid(
+                "ID3 frame extends beyond the declared tag".into(),
+            ));
         }
 
         let frame_data = &tag[offset + 10..frame_end];
@@ -460,7 +558,9 @@ fn parse_mp3_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         };
         if let Some(parsed) = is_majik {
             if signature_payload.is_some() {
-                return Err(SignatureClientError::Invalid("MP3 contains duplicate Majik TXXX frames".into()));
+                return Err(SignatureClientError::Invalid(
+                    "MP3 contains duplicate Majik TXXX frames".into(),
+                ));
             }
             signature_payload = Some(parsed?);
         } else {
@@ -489,7 +589,9 @@ fn build_mp3_signature_tag(canonical_prefix: &[u8], payload: &str) -> Result<Vec
     let mut frames = Vec::new();
     if !canonical_prefix.is_empty() {
         if canonical_prefix.len() < 10 || &canonical_prefix[..3] != b"ID3" {
-            return Err(SignatureClientError::Invalid("MP3 canonical ID3 prefix is malformed".into()));
+            return Err(SignatureClientError::Invalid(
+                "MP3 canonical ID3 prefix is malformed".into(),
+            ));
         }
         frames.extend_from_slice(&canonical_prefix[10..]);
     }
@@ -519,7 +621,9 @@ struct FlacBlock {
 
 fn parse_flac_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     if source.length() < 8 || read_at(source, 0, 4)?.as_slice() != FLAC_MAGIC {
-        return Err(SignatureClientError::Invalid("Invalid FLAC magic header".into()));
+        return Err(SignatureClientError::Invalid(
+            "Invalid FLAC magic header".into(),
+        ));
     }
     let mut offset = 4u64;
     let mut blocks = Vec::new();
@@ -533,8 +637,14 @@ fn parse_flac_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
                 "FLAC metadata contains more than {MAX_MEDIA_CHUNKS} blocks"
             )));
         }
-        if offset.checked_add(4).map(|end| end > source.length()).unwrap_or(true) {
-            return Err(SignatureClientError::Invalid("FLAC metadata block header is truncated".into()));
+        if offset
+            .checked_add(4)
+            .map(|end| end > source.length())
+            .unwrap_or(true)
+        {
+            return Err(SignatureClientError::Invalid(
+                "FLAC metadata block header is truncated".into(),
+            ));
         }
         let header = read_at(source, offset, 4)?;
         let kind = header[0] & 0x7f;
@@ -545,26 +655,37 @@ fn parse_flac_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
             .and_then(|value| value.checked_add(size))
             .ok_or_else(|| SignatureClientError::Invalid("FLAC metadata size overflowed".into()))?;
         if end > source.length() {
-            return Err(SignatureClientError::Invalid("FLAC metadata block extends beyond the file".into()));
+            return Err(SignatureClientError::Invalid(
+                "FLAC metadata block extends beyond the file".into(),
+            ));
         }
         metadata_bytes = metadata_bytes
             .checked_add(4 + size)
             .ok_or_else(|| SignatureClientError::Invalid("FLAC metadata size overflowed".into()))?;
         if metadata_bytes > MAX_MEDIA_METADATA_BYTES {
-            return Err(file_error("fileTooLarge", "FLAC metadata exceeds the 32 MiB limit"));
+            return Err(file_error(
+                "fileTooLarge",
+                "FLAC metadata exceeds the 32 MiB limit",
+            ));
         }
         let raw = read_at(
             source,
             offset,
-            usize::try_from(4 + size).map_err(|_| file_error("fileTooLarge", "FLAC metadata is too large"))?,
+            usize::try_from(4 + size)
+                .map_err(|_| file_error("fileTooLarge", "FLAC metadata is too large"))?,
         )?;
         let data = raw[4..].to_vec();
         if kind == 2 && data.len() >= 4 && &data[..4] == FLAC_APPLICATION_ID {
             if signature_payload.is_some() {
-                return Err(SignatureClientError::Invalid("FLAC contains duplicate Majik APPLICATION blocks".into()));
+                return Err(SignatureClientError::Invalid(
+                    "FLAC contains duplicate Majik APPLICATION blocks".into(),
+                ));
             }
-            let text = String::from_utf8(data[4..].to_vec())
-                .map_err(|error| SignatureClientError::Invalid(format!("FLAC signature payload is not UTF-8: {error}")))?;
+            let text = String::from_utf8(data[4..].to_vec()).map_err(|error| {
+                SignatureClientError::Invalid(format!(
+                    "FLAC signature payload is not UTF-8: {error}"
+                ))
+            })?;
             signature_payload = Some(text.trim_end_matches('\0').to_owned());
         }
         blocks.push(FlacBlock { kind, raw, data });
@@ -573,10 +694,14 @@ fn parse_flac_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     }
 
     if blocks.is_empty() || blocks[0].kind != 0 {
-        return Err(SignatureClientError::Invalid("FLAC metadata must begin with STREAMINFO".into()));
+        return Err(SignatureClientError::Invalid(
+            "FLAC metadata must begin with STREAMINFO".into(),
+        ));
     }
     if offset >= source.length() {
-        return Err(SignatureClientError::Invalid("FLAC audio stream is missing".into()));
+        return Err(SignatureClientError::Invalid(
+            "FLAC audio stream is missing".into(),
+        ));
     }
 
     // The core handler leaves unsigned FLAC byte-for-byte unchanged.
@@ -584,7 +709,8 @@ fn parse_flac_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         read_at(
             source,
             0,
-            usize::try_from(offset).map_err(|_| file_error("fileTooLarge", "FLAC metadata length is unsupported"))?,
+            usize::try_from(offset)
+                .map_err(|_| file_error("fileTooLarge", "FLAC metadata length is unsupported"))?,
         )?
     } else {
         let kept: Vec<&FlacBlock> = blocks
@@ -592,7 +718,9 @@ fn parse_flac_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
             .filter(|block| !(block.kind == 2 && block.data.starts_with(FLAC_APPLICATION_ID)))
             .collect();
         if kept.is_empty() {
-            return Err(SignatureClientError::Invalid("Cannot strip the FLAC signature without STREAMINFO".into()));
+            return Err(SignatureClientError::Invalid(
+                "Cannot strip the FLAC signature without STREAMINFO".into(),
+            ));
         }
         let mut canonical = Vec::new();
         canonical.extend_from_slice(FLAC_MAGIC);
@@ -619,7 +747,6 @@ fn parse_flac_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     ))
 }
 
-
 // WAV: metadata chunks are bounded and audio data chunks are skipped by offset.
 fn parse_wav_info_list(data: &[u8]) -> Result<Option<(Vec<u8>, Option<String>)>> {
     if data.len() < 4 || &data[..4] != b"INFO" {
@@ -638,8 +765,14 @@ fn parse_wav_info_list(data: &[u8]) -> Result<Option<(Vec<u8>, Option<String>)>>
                 "WAV INFO list contains more than {MAX_MEDIA_CHUNKS} metadata chunks"
             )));
         }
-        if offset.checked_add(8).map(|end| end > data.len()).unwrap_or(true) {
-            return Err(SignatureClientError::Invalid("WAV INFO metadata chunk header is truncated".into()));
+        if offset
+            .checked_add(8)
+            .map(|end| end > data.len())
+            .unwrap_or(true)
+        {
+            return Err(SignatureClientError::Invalid(
+                "WAV INFO metadata chunk header is truncated".into(),
+            ));
         }
         let kind = &data[offset..offset + 4];
         let size = u32::from_le_bytes([
@@ -648,21 +781,33 @@ fn parse_wav_info_list(data: &[u8]) -> Result<Option<(Vec<u8>, Option<String>)>>
             data[offset + 6],
             data[offset + 7],
         ]) as usize;
-        let padded = size.checked_add(size % 2)
-            .ok_or_else(|| SignatureClientError::Invalid("WAV metadata chunk size overflowed".into()))?;
-        let end = offset.checked_add(8)
+        let padded = size.checked_add(size % 2).ok_or_else(|| {
+            SignatureClientError::Invalid("WAV metadata chunk size overflowed".into())
+        })?;
+        let end = offset
+            .checked_add(8)
             .and_then(|value| value.checked_add(padded))
-            .ok_or_else(|| SignatureClientError::Invalid("WAV metadata chunk end overflowed".into()))?;
+            .ok_or_else(|| {
+                SignatureClientError::Invalid("WAV metadata chunk end overflowed".into())
+            })?;
         if end > data.len() {
-            return Err(SignatureClientError::Invalid("WAV INFO metadata chunk extends beyond its LIST boundary".into()));
+            return Err(SignatureClientError::Invalid(
+                "WAV INFO metadata chunk extends beyond its LIST boundary".into(),
+            ));
         }
 
         if kind == b"ISIG" {
             if signature.is_some() {
-                return Err(SignatureClientError::Invalid("WAV contains multiple Majik ISIG metadata chunks".into()));
+                return Err(SignatureClientError::Invalid(
+                    "WAV contains multiple Majik ISIG metadata chunks".into(),
+                ));
             }
-            let encoded = std::str::from_utf8(&data[offset + 8..offset + 8 + size])
-                .map_err(|error| SignatureClientError::Invalid(format!("WAV Majik signature payload is not UTF-8: {error}")))?;
+            let encoded =
+                std::str::from_utf8(&data[offset + 8..offset + 8 + size]).map_err(|error| {
+                    SignatureClientError::Invalid(format!(
+                        "WAV Majik signature payload is not UTF-8: {error}"
+                    ))
+                })?;
             signature = Some(encoded.trim_end_matches('\0').to_owned());
         } else {
             kept.extend_from_slice(&data[offset..end]);
@@ -678,8 +823,9 @@ fn parse_wav_info_list(data: &[u8]) -> Result<Option<(Vec<u8>, Option<String>)>>
         let mut list_data = Vec::with_capacity(4 + kept.len());
         list_data.extend_from_slice(b"INFO");
         list_data.extend_from_slice(&kept);
-        let size = u32::try_from(list_data.len())
-            .map_err(|_| SignatureClientError::Invalid("WAV LIST metadata exceeds its 32-bit size field".into()))?;
+        let size = u32::try_from(list_data.len()).map_err(|_| {
+            SignatureClientError::Invalid("WAV LIST metadata exceeds its 32-bit size field".into())
+        })?;
         let mut list = Vec::with_capacity(8 + list_data.len() + (list_data.len() % 2));
         list.extend_from_slice(b"LIST");
         list.extend_from_slice(&size.to_le_bytes());
@@ -695,11 +841,15 @@ fn parse_wav_info_list(data: &[u8]) -> Result<Option<(Vec<u8>, Option<String>)>>
 
 fn parse_wav_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     if source.length() < 12 {
-        return Err(SignatureClientError::Invalid("WAV file is shorter than its RIFF/WAVE header".into()));
+        return Err(SignatureClientError::Invalid(
+            "WAV file is shorter than its RIFF/WAVE header".into(),
+        ));
     }
     let header = read_at(source, 0, 12)?;
     if &header[..4] != WAV_RIFF || &header[8..12] != WAV_WAVE {
-        return Err(SignatureClientError::Invalid("Invalid RIFF/WAVE header; RF64 is not handled by the core WAV format handler".into()));
+        return Err(SignatureClientError::Invalid(
+            "Invalid RIFF/WAVE header; RF64 is not handled by the core WAV format handler".into(),
+        ));
     }
     if source.length() > (u32::MAX as u64).saturating_add(8) {
         return Err(SignatureClientError::Invalid(
@@ -718,8 +868,14 @@ fn parse_wav_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
                 "WAV contains more than {MAX_MEDIA_CHUNKS} RIFF chunks"
             )));
         }
-        if offset.checked_add(8).map(|end| end > source.length()).unwrap_or(true) {
-            return Err(SignatureClientError::Invalid("WAV RIFF chunk header is truncated".into()));
+        if offset
+            .checked_add(8)
+            .map(|end| end > source.length())
+            .unwrap_or(true)
+        {
+            return Err(SignatureClientError::Invalid(
+                "WAV RIFF chunk header is truncated".into(),
+            ));
         }
         let chunk_header = read_at(source, offset, 8)?;
         let kind = &chunk_header[..4];
@@ -729,25 +885,37 @@ fn parse_wav_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
             chunk_header[6],
             chunk_header[7],
         ]) as u64;
-        let padded = size.checked_add(size % 2)
-            .ok_or_else(|| SignatureClientError::Invalid("WAV RIFF chunk size overflowed".into()))?;
-        let end = offset.checked_add(8)
+        let padded = size.checked_add(size % 2).ok_or_else(|| {
+            SignatureClientError::Invalid("WAV RIFF chunk size overflowed".into())
+        })?;
+        let end = offset
+            .checked_add(8)
             .and_then(|value| value.checked_add(padded))
             .ok_or_else(|| SignatureClientError::Invalid("WAV RIFF chunk end overflowed".into()))?;
         if end > source.length() {
-            return Err(SignatureClientError::Invalid("WAV RIFF chunk extends beyond the source file".into()));
+            return Err(SignatureClientError::Invalid(
+                "WAV RIFF chunk extends beyond the source file".into(),
+            ));
         }
 
         if kind == b"LIST" && size >= 4 {
             let list_type = read_at(source, offset + 8, 4)?;
             if list_type.as_slice() == b"INFO" {
                 if size > MAX_MEDIA_METADATA_BYTES {
-                    return Err(file_error("fileTooLarge", "WAV INFO metadata exceeds the 32 MiB streaming metadata limit"));
+                    return Err(file_error(
+                        "fileTooLarge",
+                        "WAV INFO metadata exceeds the 32 MiB streaming metadata limit",
+                    ));
                 }
                 let list_data = read_at(
                     source,
                     offset + 8,
-                    usize::try_from(size).map_err(|_| file_error("fileTooLarge", "WAV INFO metadata size cannot be represented"))?,
+                    usize::try_from(size).map_err(|_| {
+                        file_error(
+                            "fileTooLarge",
+                            "WAV INFO metadata size cannot be represented",
+                        )
+                    })?,
                 )?;
                 if let Some((replacement, Some(payload))) = parse_wav_info_list(&list_data)? {
                     if signature_rewrite.is_some() {
@@ -763,7 +931,9 @@ fn parse_wav_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     }
 
     if offset != source.length() {
-        return Err(SignatureClientError::Invalid("WAV contains unparsed trailing bytes".into()));
+        return Err(SignatureClientError::Invalid(
+            "WAV contains unparsed trailing bytes".into(),
+        ));
     }
 
     let (start, end, canonical_replacement, payload) = match signature_rewrite {
@@ -780,21 +950,28 @@ fn parse_wav_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         "audio/wav",
     );
     let canonical_len = plan.canonical_len()?;
-    let riff_size = canonical_len.checked_sub(8)
-        .ok_or_else(|| SignatureClientError::Invalid("Canonical WAV is shorter than its RIFF header".into()))?;
+    let riff_size = canonical_len.checked_sub(8).ok_or_else(|| {
+        SignatureClientError::Invalid("Canonical WAV is shorter than its RIFF header".into())
+    })?;
     let riff_size = u32::try_from(riff_size).map_err(|_| {
-        SignatureClientError::Invalid("Canonical WAV exceeds the 32-bit RIFF size limit; RF64 is not supported".into())
+        SignatureClientError::Invalid(
+            "Canonical WAV exceeds the 32-bit RIFF size limit; RF64 is not supported".into(),
+        )
     })?;
     plan.riff_size_patch = Some(riff_size.to_le_bytes());
     Ok(plan)
 }
 
 fn build_wav_signature_chunk(payload: &str) -> Result<Vec<u8>> {
-    let payload_size = u32::try_from(payload.len())
-        .map_err(|_| SignatureClientError::Invalid("WAV signature payload exceeds its 32-bit size field".into()))?;
-    let padded_len = payload.len()
+    let payload_size = u32::try_from(payload.len()).map_err(|_| {
+        SignatureClientError::Invalid("WAV signature payload exceeds its 32-bit size field".into())
+    })?;
+    let padded_len = payload
+        .len()
         .checked_add(payload.len() % 2)
-        .ok_or_else(|| SignatureClientError::Invalid("WAV signature payload size overflowed".into()))?;
+        .ok_or_else(|| {
+            SignatureClientError::Invalid("WAV signature payload size overflowed".into())
+        })?;
     let mut list_data = Vec::with_capacity(4 + 8 + padded_len);
     list_data.extend_from_slice(b"INFO");
     list_data.extend_from_slice(b"ISIG");
@@ -804,8 +981,9 @@ fn build_wav_signature_chunk(payload: &str) -> Result<Vec<u8>> {
         list_data.push(0);
     }
 
-    let list_len = u32::try_from(list_data.len())
-        .map_err(|_| SignatureClientError::Invalid("WAV signature LIST exceeds its 32-bit size field".into()))?;
+    let list_len = u32::try_from(list_data.len()).map_err(|_| {
+        SignatureClientError::Invalid("WAV signature LIST exceeds its 32-bit size field".into())
+    })?;
     let mut output = Vec::with_capacity(8 + list_data.len() + (list_data.len() % 2));
     output.extend_from_slice(b"LIST");
     output.extend_from_slice(&list_len.to_le_bytes());
@@ -818,7 +996,9 @@ fn build_wav_signature_chunk(payload: &str) -> Result<Vec<u8>> {
 
 fn build_flac_signature_metadata(canonical_prefix: &[u8], payload: &str) -> Result<Vec<u8>> {
     if canonical_prefix.len() < 8 || &canonical_prefix[..4] != FLAC_MAGIC {
-        return Err(SignatureClientError::Invalid("FLAC canonical metadata prefix is malformed".into()));
+        return Err(SignatureClientError::Invalid(
+            "FLAC canonical metadata prefix is malformed".into(),
+        ));
     }
     let mut output = canonical_prefix.to_vec();
     let mut offset = 4usize;
@@ -831,23 +1011,34 @@ fn build_flac_signature_metadata(canonical_prefix: &[u8], payload: &str) -> Resu
         let end = offset
             .checked_add(4)
             .and_then(|value| value.checked_add(size))
-            .ok_or_else(|| SignatureClientError::Invalid("FLAC metadata block size overflowed".into()))?;
+            .ok_or_else(|| {
+                SignatureClientError::Invalid("FLAC metadata block size overflowed".into())
+            })?;
         if end > output.len() {
-            return Err(SignatureClientError::Invalid("FLAC metadata block is truncated".into()));
+            return Err(SignatureClientError::Invalid(
+                "FLAC metadata block is truncated".into(),
+            ));
         }
         output[offset] = header & 0x7f;
         offset = end;
         count += 1;
     }
     if offset != output.len() || count == 0 {
-        return Err(SignatureClientError::Invalid("FLAC metadata block list is malformed".into()));
+        return Err(SignatureClientError::Invalid(
+            "FLAC metadata block list is malformed".into(),
+        ));
     }
 
-    let payload_len = FLAC_APPLICATION_ID.len()
+    let payload_len = FLAC_APPLICATION_ID
+        .len()
         .checked_add(payload.len())
-        .ok_or_else(|| SignatureClientError::Invalid("FLAC signature block size overflowed".into()))?;
+        .ok_or_else(|| {
+            SignatureClientError::Invalid("FLAC signature block size overflowed".into())
+        })?;
     if payload_len > 0x00ff_ffff {
-        return Err(SignatureClientError::Invalid("FLAC signature block exceeds its 24-bit length field".into()));
+        return Err(SignatureClientError::Invalid(
+            "FLAC signature block exceeds its 24-bit length field".into(),
+        ));
     }
     let mut block = Vec::with_capacity(4 + payload_len);
     block.push(0x80 | 2);
@@ -859,11 +1050,13 @@ fn build_flac_signature_metadata(canonical_prefix: &[u8], payload: &str) -> Resu
     output.extend_from_slice(&block);
 
     if output.len() as u64 > MAX_MEDIA_METADATA_BYTES {
-        return Err(file_error("fileTooLarge", "FLAC metadata plus signature exceeds 32 MiB"));
+        return Err(file_error(
+            "fileTooLarge",
+            "FLAC metadata plus signature exceeds 32 MiB",
+        ));
     }
     Ok(output)
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -876,12 +1069,7 @@ mod tests {
         ))
     }
 
-    fn assert_streaming_round_trip(
-        format: &str,
-        mime: &str,
-        extension: &str,
-        unsigned: Vec<u8>,
-    ) {
+    fn assert_streaming_round_trip(format: &str, mime: &str, extension: &str, unsigned: Vec<u8>) {
         let input_path = fixture_path(extension);
         std::fs::write(&input_path, &unsigned).unwrap();
 
@@ -894,9 +1082,7 @@ mod tests {
 
         let start = usize::try_from(plan.replace_start).unwrap();
         let end = usize::try_from(plan.replace_end).unwrap();
-        let mut signed = Vec::with_capacity(
-            unsigned.len() - (end - start) + replacement.len(),
-        );
+        let mut signed = Vec::with_capacity(unsigned.len() - (end - start) + replacement.len());
         signed.extend_from_slice(&unsigned[..start]);
         signed.extend_from_slice(&replacement);
         signed.extend_from_slice(&unsigned[end..]);
@@ -914,11 +1100,8 @@ mod tests {
             Some(payload),
             "{format}: signature metadata extraction"
         );
-        let mut reader = RewrittenFileReader::new(
-            signed_input.try_clone_file().unwrap(),
-            &signed_plan,
-        )
-        .unwrap();
+        let mut reader =
+            RewrittenFileReader::new(signed_input.try_clone_file().unwrap(), &signed_plan).unwrap();
         let mut streamed_canonical = Vec::new();
         reader.read_to_end(&mut streamed_canonical).unwrap();
         assert_eq!(
@@ -941,12 +1124,7 @@ mod tests {
 
     #[test]
     fn jpeg_streaming_metadata_matches_core_handler() {
-        assert_streaming_round_trip(
-            "jpeg",
-            "image/jpeg",
-            "jpg",
-            vec![0xff, 0xd8, 0xff, 0xd9],
-        );
+        assert_streaming_round_trip("jpeg", "image/jpeg", "jpg", vec![0xff, 0xd8, 0xff, 0xd9]);
     }
 
     #[test]

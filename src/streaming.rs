@@ -503,11 +503,15 @@ impl RewrittenFileReader {
     }
 
     fn apply_riff_size_patch(&self, physical_start: u64, bytes: &mut [u8]) {
-        let Some(patch) = self.riff_size_patch else { return; };
+        let Some(patch) = self.riff_size_patch else {
+            return;
+        };
         let read_end = physical_start.saturating_add(bytes.len() as u64);
         let overlap_start = physical_start.max(4);
         let overlap_end = read_end.min(8);
-        if overlap_start >= overlap_end { return; }
+        if overlap_start >= overlap_end {
+            return;
+        }
         let destination_start = (overlap_start - physical_start) as usize;
         let destination_end = (overlap_end - physical_start) as usize;
         let patch_start = (overlap_start - 4) as usize;
@@ -635,7 +639,8 @@ fn copy_source_segment(
                 let destination_end = (overlap_end - physical_start) as usize;
                 let patch_start = (overlap_start - 4) as usize;
                 let patch_end = (overlap_end - 4) as usize;
-                buffer[destination_start..destination_end].copy_from_slice(&patch[patch_start..patch_end]);
+                buffer[destination_start..destination_end]
+                    .copy_from_slice(&patch[patch_start..patch_end]);
             }
         }
         output.write_all(&buffer[..count]).map_err(|error| {
@@ -739,9 +744,15 @@ fn write_rewritten_and_check(
         let riff_size = u32::try_from(riff_size).map_err(|_| {
             SignatureClientError::Invalid("WAV output exceeds the 32-bit RIFF size limit; RF64 is not supported by the core WAV handler".into())
         })?;
-        output.seek(SeekFrom::Start(4)).map_err(|error| file_error("fileWriteFailed", error.to_string()))?;
-        output.write_all(&riff_size.to_le_bytes()).map_err(|error| file_error("fileWriteFailed", error.to_string()))?;
-        output.seek(SeekFrom::End(0)).map_err(|error| file_error("fileWriteFailed", error.to_string()))?;
+        output
+            .seek(SeekFrom::Start(4))
+            .map_err(|error| file_error("fileWriteFailed", error.to_string()))?;
+        output
+            .write_all(&riff_size.to_le_bytes())
+            .map_err(|error| file_error("fileWriteFailed", error.to_string()))?;
+        output
+            .seek(SeekFrom::End(0))
+            .map_err(|error| file_error("fileWriteFailed", error.to_string()))?;
     }
     Ok(total_output)
 }
@@ -1325,7 +1336,6 @@ fn build_rewrite_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     }
 }
 
-
 fn normalized_destination(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return fs::canonicalize(path)
@@ -1505,7 +1515,9 @@ fn verify_prior_stream(
     if !verified.valid {
         return Err(SignatureClientError::Invalid(format!(
             "The prior file signature is invalid: {}",
-            verified.reason.unwrap_or_else(|| "signature verification failed".into())
+            verified
+                .reason
+                .unwrap_or_else(|| "signature verification failed".into())
         )));
     }
     source.ensure_unchanged()?;
@@ -1572,11 +1584,12 @@ fn pdf_or_mp4_output_replacement(plan: &RewritePlan, payload: &str) -> Result<Ve
                 embed_mp4_moov(&plan.canonical_replacement, payload)
             }
         }
-        "PNG" | "JPEG" | "MP3" | "FLAC" | "WAV" => {
-            media::output_replacement(plan, payload)?.ok_or_else(|| {
-                SignatureClientError::Invalid("The media streaming handler did not produce signature metadata".into())
-            })
-        }
+        "PNG" | "JPEG" | "MP3" | "FLAC" | "WAV" => media::output_replacement(plan, payload)?
+            .ok_or_else(|| {
+                SignatureClientError::Invalid(
+                    "The media streaming handler did not produce signature metadata".into(),
+                )
+            }),
         "Fallback (Universal Trailer)" => {
             let mut replacement = Vec::with_capacity(payload.len() + 16);
             replacement.extend_from_slice(payload.as_bytes());
@@ -1589,7 +1602,6 @@ fn pdf_or_mp4_output_replacement(plan: &RewritePlan, payload: &str) -> Result<Ve
         )),
     }
 }
-
 
 fn sign_event_and_history(
     client: &mut SignatureClient,
@@ -1706,7 +1718,8 @@ impl SignatureClient {
             let prior_envelope = MajikSignatureEnvelope::from_input(prior_input)?;
             let prior_source = OpenedStreamFile::open(prior_path, options.mime_type.as_deref())?;
             let prior_plan = build_rewrite_plan(&prior_source)?;
-            let prior_hash = verify_prior_stream(&prior_source, &prior_plan, &prior_envelope, stream)?;
+            let prior_hash =
+                verify_prior_stream(&prior_source, &prior_plan, &prior_envelope, stream)?;
             let prior_envelope = backfill_initial_file_version(prior_envelope, &prior_hash)?;
             (prior_envelope, Some(prior_hash))
         } else {
@@ -1719,7 +1732,9 @@ impl SignatureClient {
         validate_envelope_commitments(&envelope)?;
         let total = plan.canonical_len()?;
         let current_content_hash = if prior_content_hash.is_some() {
-            Some(bytes_to_base64(&hash_reader_for_plan(&source, &plan, stream, false)?))
+            Some(bytes_to_base64(&hash_reader_for_plan(
+                &source, &plan, stream, false,
+            )?))
         } else {
             None
         };
@@ -1731,18 +1746,27 @@ impl SignatureClient {
                 let last = envelope.last_file_version();
                 let next_version = match last {
                     Some(entry) => entry.version.checked_add(1).ok_or_else(|| {
-                        SignatureClientError::Invalid("Detached file version counter overflowed".into())
+                        SignatureClientError::Invalid(
+                            "Detached file version counter overflowed".into(),
+                        )
                     })?,
                     None => 1,
                 };
-                let timestamp = options.timestamp.clone().unwrap_or_else(|| Timestamp::now().to_string());
+                let timestamp = options
+                    .timestamp
+                    .clone()
+                    .unwrap_or_else(|| Timestamp::now().to_string());
                 Some(FileVersion {
                     version: next_version,
                     timestamp,
                     content_hash: content_hash.to_owned(),
-                    previous_version_hash: last.map(MajikSignatureEnvelope::hash_file_version_entry),
+                    previous_version_hash: last
+                        .map(MajikSignatureEnvelope::hash_file_version_entry),
                     created_by: Some(key.fingerprint().to_string()),
-                    message: options.message.clone().filter(|message| !message.is_empty()),
+                    message: options
+                        .message
+                        .clone()
+                        .filter(|message| !message.is_empty()),
                 })
             } else {
                 None
@@ -1754,7 +1778,10 @@ impl SignatureClient {
             });
             let sign_options = SignOptions {
                 content_type: options.content_type.clone(),
-                timestamp: revision.as_ref().map(|entry| entry.timestamp.clone()).or_else(|| options.timestamp.clone()),
+                timestamp: revision
+                    .as_ref()
+                    .map(|entry| entry.timestamp.clone())
+                    .or_else(|| options.timestamp.clone()),
                 valid_until: options.valid_until.clone(),
                 allowlist_hash,
                 version_chain_hash,
@@ -1979,7 +2006,17 @@ impl SignatureClient {
             }
         }
         let plan = build_rewrite_plan(&source)?;
-        if !matches!(plan.handler, "PDF" | "MP4/MOV" | "PNG" | "JPEG" | "MP3" | "FLAC" | "WAV" | "Fallback (Universal Trailer)") {
+        if !matches!(
+            plan.handler,
+            "PDF"
+                | "MP4/MOV"
+                | "PNG"
+                | "JPEG"
+                | "MP3"
+                | "FLAC"
+                | "WAV"
+                | "Fallback (Universal Trailer)"
+        ) {
             return Err(SignatureClientError::Invalid(
                 "Large-file embedded signing is currently supported for PDF, MP4/MOV, PNG, JPEG, MP3, FLAC, and universal-trailer formats. This specialised container is not yet supported by the streaming writer.".into(),
             ));
@@ -1999,7 +2036,8 @@ impl SignatureClient {
                     "The prior file does not contain an embedded Majik Signature envelope.".into(),
                 )
             })?;
-            let prior_hash = verify_prior_stream(&prior_source, &prior_plan, &prior_envelope, stream)?;
+            let prior_hash =
+                verify_prior_stream(&prior_source, &prior_plan, &prior_envelope, stream)?;
             backfill_initial_file_version(prior_envelope, &prior_hash)?
         } else {
             parse_plan_envelope(&plan)?.unwrap_or_else(MajikSignatureEnvelope::empty)
@@ -2133,7 +2171,17 @@ impl SignatureClient {
             }
         }
         let plan = build_rewrite_plan(&file)?;
-        if !matches!(plan.handler, "PDF" | "MP4/MOV" | "PNG" | "JPEG" | "MP3" | "FLAC" | "WAV" | "Fallback (Universal Trailer)") {
+        if !matches!(
+            plan.handler,
+            "PDF"
+                | "MP4/MOV"
+                | "PNG"
+                | "JPEG"
+                | "MP3"
+                | "FLAC"
+                | "WAV"
+                | "Fallback (Universal Trailer)"
+        ) {
             return Err(SignatureClientError::Invalid(
                 "Embedded streaming verification is not available for this specialised container"
                     .into(),
@@ -2339,15 +2387,21 @@ mod tests {
         let signed_plan = build_rewrite_plan(&signed_source).unwrap();
         assert_eq!(signed_plan.envelope_payload.as_deref(), Some(payload));
         let mut actual_reader =
-            RewrittenFileReader::new(signed_source.try_clone_file().unwrap(), &signed_plan).unwrap();
+            RewrittenFileReader::new(signed_source.try_clone_file().unwrap(), &signed_plan)
+                .unwrap();
         let mut actual_canonical = Vec::new();
         actual_reader.read_to_end(&mut actual_canonical).unwrap();
 
         let mut expected_reader =
             RewrittenFileReader::new(source.try_clone_file().unwrap(), &plan).unwrap();
         let mut expected_canonical = Vec::new();
-        expected_reader.read_to_end(&mut expected_canonical).unwrap();
-        assert_eq!(actual_canonical, expected_canonical, "{handler} canonical bytes changed");
+        expected_reader
+            .read_to_end(&mut expected_canonical)
+            .unwrap();
+        assert_eq!(
+            actual_canonical, expected_canonical,
+            "{handler} canonical bytes changed"
+        );
 
         let _ = fs::remove_file(source_path);
         let _ = fs::remove_file(signed_path);
@@ -2366,7 +2420,12 @@ mod tests {
         assert_media_round_trip("image/png", "png", &png, "PNG");
 
         assert_media_round_trip("image/jpeg", "jpg", &[0xff, 0xd8, 0xff, 0xd9], "JPEG");
-        assert_media_round_trip("audio/mpeg", "mp3", &[0xff, 0xfb, 0x90, 0x64, 0, 0, 0], "MP3");
+        assert_media_round_trip(
+            "audio/mpeg",
+            "mp3",
+            &[0xff, 0xfb, 0x90, 0x64, 0, 0, 0],
+            "MP3",
+        );
 
         let mut flac = b"fLaC".to_vec();
         flac.extend_from_slice(&[0x80, 0, 0, 0]);
@@ -2387,10 +2446,7 @@ mod tests {
 
     #[test]
     fn matroska_and_webm_use_the_streamed_universal_trailer() {
-        for (mime, extension) in [
-            ("video/x-matroska", "mkv"),
-            ("video/webm", "webm"),
-        ] {
+        for (mime, extension) in [("video/x-matroska", "mkv"), ("video/webm", "webm")] {
             let path = std::env::temp_dir().join(format!(
                 "majik-stream-ebml-{}.{}",
                 uuid::Uuid::new_v4(),
