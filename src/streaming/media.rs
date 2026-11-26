@@ -790,7 +790,7 @@ fn parse_wav_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
 }
 
 fn build_wav_signature_chunk(payload: &str) -> Result<Vec<u8>> {
-    let payload_len = u32::try_from(payload.len())
+    let payload_size = u32::try_from(payload.len())
         .map_err(|_| SignatureClientError::Invalid("WAV signature payload exceeds its 32-bit size field".into()))?;
     let padded_len = payload.len()
         .checked_add(payload.len() % 2)
@@ -798,7 +798,7 @@ fn build_wav_signature_chunk(payload: &str) -> Result<Vec<u8>> {
     let mut list_data = Vec::with_capacity(4 + 8 + padded_len);
     list_data.extend_from_slice(b"INFO");
     list_data.extend_from_slice(b"ISIG");
-    list_data.extend_from_slice(&(padded_len as u32).to_le_bytes());
+    list_data.extend_from_slice(&payload_size.to_le_bytes());
     list_data.extend_from_slice(payload.as_bytes());
     if payload.len() % 2 == 1 {
         list_data.push(0);
