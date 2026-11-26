@@ -107,6 +107,137 @@ fn decode_name(raw: &[u8]) -> String {
     }
 }
 
+
+fn read_zip_at(source: &OpenedStreamFile, offset: u64, length: usize) -> Result<Vec<u8>> {
+    let mut file = source.try_clone_file()?;
+    file.seek(SeekFrom::Start(offset))
+        .map_err(|error| io_file_error("fileUnreadable", source.path(), error))?;
+    let mut bytes = vec![0u8; length];
+    file.read_exact(&mut bytes)
+        .map_err(|error| io_file_error("fileUnreadable", source.path(), error))?;
+    Ok(bytes)
+}
+
+fn u16_at(bytes: &[u8], offset: usize) -> u16 {
+    u16::from_le_bytes([bytes[offset], bytes[offset + 1]])
+}
+
+fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+    ])
+}
+
+fn u64_at(bytes: &[u8], offset: usize) -> u64 {
+    u64::from_le_bytes([
+        bytes[offset],
+        bytes[offset + 1],
+        bytes[offset + 2],
+        bytes[offset + 3],
+        bytes[offset + 4],
+        bytes[offset + 5],
+        bytes[offset + 6],
+        bytes[offset + 7],
+    ])
+}
+
+/// Bound central-directory parsing before handing an untrusted ZIP to ZipArchive, which indexes
+/// all directory records in memory. This keeps malformed archives from forcing unbounded metadata
+/// allocations even though their file payloads are streamed to disk.
+fn validate_zip_directory(source: &OpenedStreamFile) -> Result<()> {
+    const EOCD_LEN: usize = 22;
+    const ZIP64_LOCATOR_LEN: usize = 20;
+    const ZIP64_EOCD_MIN_LEN: usize = 56;
+
+    let length = source.length();
+    if length < EOCD_LEN as u64 {
+        return Err(SignatureClientError::Invalid("ZIP archive is too short to contain an end record".into()));
+    }
+    let tail_len = usize::try_from(length.min((EOCD_LEN + u16::MAX as usize) as u64))
+        .map_err(|_| SignatureClientError::Invalid("ZIP end-record search window is unsupported".into()))?;
+    let tail = read_zip_at(source, length - tail_len as u64, tail_len)?;
+    let eocd_relative = tail
+        .windows(4)
+        .rposition(|window| window == b"PK\x05\x06")
+        .filter(|offset| {
+            *offset + EOCD_LEN <= tail.len()
+                && *offset + EOCD_LEN + u16_at(&tail, *offset + 20) as usize <= tail.len()
+        })
+        .ok_or_else(|| SignatureClientError::Invalid("ZIP end-of-central-directory record is missing or truncated".into()))?;
+    let eocd_absolute = length - tail_len as u64 + eocd_relative as u64;
+    let eocd = &tail[eocd_relative..];
+    let disk_number = u16_at(eocd, 4);
+    let directory_disk = u16_at(eocd, 6);
+    if disk_number != 0 || directory_disk != 0 {
+        return Err(SignatureClientError::Invalid("Multi-disk ZIP archives are not supported for streaming Office operations".into()));
+    }
+
+    let entries_on_disk = u16_at(eocd, 8);
+    let total_entries = u16_at(eocd, 10);
+    let classic_directory_size = u32_at(eocd, 12);
+    let classic_directory_offset = u32_at(eocd, 16);
+    let is_zip64 = entries_on_disk == u16::MAX
+        || total_entries == u16::MAX
+        || classic_directory_size == u32::MAX
+        || classic_directory_offset == u32::MAX;
+
+    let (entry_count, directory_size, directory_offset) = if is_zip64 {
+        if eocd_absolute < ZIP64_LOCATOR_LEN as u64 {
+            return Err(SignatureClientError::Invalid("ZIP64 end record locator is missing".into()));
+        }
+        let locator = read_zip_at(
+            source,
+            eocd_absolute - ZIP64_LOCATOR_LEN as u64,
+            ZIP64_LOCATOR_LEN,
+        )?;
+        if &locator[..4] != b"PK\x06\x07" || u32_at(&locator, 4) != 0 || u32_at(&locator, 16) != 1 {
+            return Err(SignatureClientError::Invalid("ZIP64 end record locator is invalid or multi-disk".into()));
+        }
+        let zip64_offset = u64_at(&locator, 8);
+        let zip64 = read_zip_at(source, zip64_offset, ZIP64_EOCD_MIN_LEN)?;
+        if &zip64[..4] != b"PK\x06\x06" || u64_at(&zip64, 4) < 44 {
+            return Err(SignatureClientError::Invalid("ZIP64 end record is invalid".into()));
+        }
+        if u32_at(&zip64, 16) != 0 || u32_at(&zip64, 20) != 0 {
+            return Err(SignatureClientError::Invalid("Multi-disk ZIP64 archives are not supported".into()));
+        }
+        (
+            u64_at(&zip64, 32),
+            u64_at(&zip64, 40),
+            u64_at(&zip64, 48),
+        )
+    } else {
+        if entries_on_disk != total_entries {
+            return Err(SignatureClientError::Invalid("ZIP central-directory entry counts do not match".into()));
+        }
+        (
+            total_entries as u64,
+            classic_directory_size as u64,
+            classic_directory_offset as u64,
+        )
+    };
+
+    if entry_count > MAX_ZIP_ENTRIES as u64 {
+        return Err(file_error("fileTooLarge", "Office ZIP contains more than 65,535 entries."));
+    }
+    if directory_size > MAX_CENTRAL_DIRECTORY_BYTES {
+        return Err(file_error(
+            "fileTooLarge",
+            "Office ZIP central directory exceeds the 32 MiB metadata safety limit.",
+        ));
+    }
+    let directory_end = directory_offset.checked_add(directory_size).ok_or_else(|| {
+        SignatureClientError::Invalid("ZIP central-directory offset overflowed".into())
+    })?;
+    if directory_end > length || directory_end > eocd_absolute {
+        return Err(SignatureClientError::Invalid("ZIP central directory extends beyond the end record".into()));
+    }
+    Ok(())
+}
+
 fn is_msix_name(name: &str) -> bool {
     MSIX_PACKAGE_ENTRIES.contains(&name)
 }
@@ -334,6 +465,7 @@ fn stage_archive(
     source: &OpenedStreamFile,
     workspace: &TempWorkspace,
 ) -> Result<(Vec<StagedEntry>, Option<String>)> {
+    validate_zip_directory(source)?;
     let mut archive = ZipArchive::new(source.try_clone_file()?).map_err(|error| {
         SignatureClientError::Invalid(format!("Invalid Office ZIP archive: {error}"))
     })?;
@@ -458,6 +590,7 @@ pub(super) fn detect_office_input(source: &OpenedStreamFile, head: &[u8]) -> Res
         return Ok(false);
     }
 
+    validate_zip_directory(source)?;
     let mut archive = ZipArchive::new(source.try_clone_file()?).map_err(|error| {
         SignatureClientError::Invalid(format!("Invalid ZIP-based file: {error}"))
     })?;
