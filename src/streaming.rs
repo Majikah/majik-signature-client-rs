@@ -498,9 +498,6 @@ impl RewrittenFileReader {
     fn new(source_file: File, plan: &RewritePlan) -> Result<Self> {
         let virtual_len = plan.canonical_len()?;
         if let Some(office) = plan.office_archive.as_ref() {
-            let file = File::open(office.canonical_path()).map_err(|error| {
-                io_file_error("fileUnreadable", office.canonical_path(), error)
-            })?;
             return Ok(Self {
                 file,
                 source_len: virtual_len,
