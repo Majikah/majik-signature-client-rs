@@ -1376,6 +1376,21 @@ fn build_rewrite_plan(
     }
 }
 
+fn validate_stream_input_size(
+    source: &OpenedStreamFile,
+    stream: &StreamingFileOptions<'_>,
+) -> Result<()> {
+    if let Some(max) = stream.max_bytes {
+        if source.length() > max {
+            return Err(file_error(
+                "fileTooLarge",
+                format!("Input exceeds the configured streaming limit of {max} bytes"),
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn normalized_destination(path: &Path) -> Result<PathBuf> {
     if path.exists() {
         return fs::canonicalize(path)
@@ -1759,6 +1774,7 @@ impl SignatureClient {
             })?;
             let prior_envelope = MajikSignatureEnvelope::from_input(prior_input)?;
             let prior_source = OpenedStreamFile::open(prior_path, None)?;
+            validate_stream_input_size(&prior_source, stream)?;
             let prior_plan = build_rewrite_plan(&prior_source, stream.cancellation)?;
             let prior_hash =
                 verify_prior_stream(&prior_source, &prior_plan, &prior_envelope, stream)?;
@@ -2075,6 +2091,7 @@ impl SignatureClient {
             ensure_distinct_paths(prior_path, input_path)?;
             ensure_distinct_paths(prior_path, output_path)?;
             let prior_source = OpenedStreamFile::open(prior_path, None)?;
+            validate_stream_input_size(&prior_source, stream)?;
             let prior_plan = build_rewrite_plan(&prior_source, stream.cancellation)?;
             let prior_envelope = parse_plan_envelope(&prior_plan)?.ok_or_else(|| {
                 SignatureClientError::Invalid(
