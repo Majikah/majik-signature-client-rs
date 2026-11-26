@@ -1236,7 +1236,6 @@ fn parse_mp4_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
                 mime_type: "video/mp4".to_string(),
                 has_mp4_moov: true,
                 mp4_moov_after_mdat: seen_mdat && offset.checked_add(box_size) == Some(len),
-                office_archive: None,
                 riff_size_patch: None,
                 office_archive: None,
             });
