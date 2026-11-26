@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use zip::ZipArchive;
 
@@ -20,6 +21,18 @@ const MAX_UNZIPPED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_SIGNATURE_ENTRY_BYTES: u64 = 8 * 1024 * 1024;
 const MAX_CENTRAL_DIRECTORY_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ZIP_ENTRIES: usize = u16::MAX as usize;
+
+fn check_cancelled(cancellation: Option<&AtomicBool>) -> Result<()> {
+    if cancellation
+        .map(|flag| flag.load(Ordering::Acquire))
+        .unwrap_or(false)
+    {
+        return Err(SignatureClientError::Invalid(
+            "Streaming operation was cancelled".into(),
+        ));
+    }
+    Ok(())
+}
 
 const OFFICE_MIME_TYPES: &[&str] = &[
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -287,6 +300,7 @@ fn read_entry_bounded(
     declared_size: u64,
     maximum_size: u64,
     label: &str,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<Vec<u8>> {
     if declared_size > maximum_size {
         return Err(file_error(
@@ -303,6 +317,7 @@ fn read_entry_bounded(
     let mut bytes = Vec::with_capacity(capacity);
     let mut buffer = [0u8; 8192];
     loop {
+        check_cancelled(cancellation)?;
         let count = entry.read(&mut buffer).map_err(|error| {
             SignatureClientError::Invalid(format!("Could not inflate {label}: {error}"))
         })?;
@@ -366,6 +381,7 @@ fn copy_staged_entry(
     output: &mut File,
     expected_size: u64,
     expected_crc32: u32,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<()> {
     let mut input =
         File::open(source).map_err(|error| io_file_error("fileUnreadable", source, error))?;
@@ -373,6 +389,7 @@ fn copy_staged_entry(
     let mut copied = 0u64;
     let mut crc_state = !0u32;
     loop {
+        check_cancelled(cancellation)?;
         let count = input
             .read(&mut buffer)
             .map_err(|error| io_file_error("fileUnreadable", source, error))?;
@@ -427,6 +444,7 @@ impl ZipArchiveWriter<'_> {
         bytes: Option<&[u8]>,
         size: u64,
         crc: u32,
+        cancellation: Option<&AtomicBool>,
     ) -> Result<()> {
         let name_bytes = name.as_bytes();
         if name_bytes.len() > u16::MAX as usize {
@@ -472,7 +490,7 @@ impl ZipArchiveWriter<'_> {
             .checked_add(30 + name_bytes.len() as u64)
             .ok_or_else(|| file_error("fileTooLarge", "Canonical Office ZIP size overflowed."))?;
         if let Some(path) = path {
-            copy_staged_entry(path, self.output, size, crc)?;
+            copy_staged_entry(path, self.output, size, crc, cancellation)?;
         } else if let Some(data) = bytes {
             self.output.write_all(data).map_err(|error| {
                 SignatureClientError::Invalid(format!(
@@ -540,6 +558,7 @@ fn write_stored_archive(
     signature: Option<&[u8]>,
     output: &mut File,
     workspace: &TempWorkspace,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<u64> {
     let entry_count = entries.len() + if signature.is_some() { 1 } else { 0 };
     if entry_count > MAX_ZIP_ENTRIES {
@@ -554,6 +573,7 @@ fn write_stored_archive(
     // be signed successfully but rejected by the next streaming verification pass.
     let mut uncompressed_size = 0u64;
     for entry in entries {
+        check_cancelled(cancellation)?;
         uncompressed_size = uncompressed_size.checked_add(entry.size).ok_or_else(|| {
             file_error("fileTooLarge", "Office ZIP uncompressed size overflowed.")
         })?;
@@ -596,12 +616,14 @@ fn write_stored_archive(
         dos_date,
     };
     for entry in entries {
+        check_cancelled(cancellation)?;
         writer.write_entry(
             &entry.name,
             Some(&entry.path),
             None,
             entry.size,
             entry.crc32,
+            cancellation,
         )?;
     }
 
@@ -618,6 +640,7 @@ fn write_stored_archive(
             Some(signature),
             signature.len() as u64,
             crc32(signature),
+            cancellation,
         )?;
     }
 
@@ -638,8 +661,25 @@ fn write_stored_archive(
         .map_err(|error| io_file_error("fileUnreadable", &central_path, error))?;
 
     let central_offset = writer.output_position;
-    let copied = io::copy(&mut *writer.central, &mut *writer.output)
-        .map_err(|error| io_file_error("fileWriteFailed", &central_path, error))?;
+    let mut copied = 0u64;
+    let mut central_buffer = [0u8; 64 * 1024];
+    loop {
+        check_cancelled(cancellation)?;
+        let count = writer
+            .central
+            .read(&mut central_buffer)
+            .map_err(|error| io_file_error("fileUnreadable", &central_path, error))?;
+        if count == 0 {
+            break;
+        }
+        writer
+            .output
+            .write_all(&central_buffer[..count])
+            .map_err(|error| io_file_error("fileWriteFailed", Path::new("<output>"), error))?;
+        copied = copied.checked_add(count as u64).ok_or_else(|| {
+            file_error("fileTooLarge", "Office ZIP central-directory copy overflowed.")
+        })?;
+    }
     if copied != writer.central_size {
         return Err(file_error(
             "fileWriteFailed",
@@ -675,7 +715,9 @@ fn write_stored_archive(
 fn stage_archive(
     source: &OpenedStreamFile,
     workspace: &TempWorkspace,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<(Vec<StagedEntry>, Option<String>)> {
+    check_cancelled(cancellation)?;
     validate_zip_directory(source)?;
     let mut archive = ZipArchive::new(source.try_clone_file()?).map_err(|error| {
         SignatureClientError::Invalid(format!("Invalid Office ZIP archive: {error}"))
@@ -689,6 +731,7 @@ fn stage_archive(
 
     let mut declared_total = 0u64;
     for index in 0..archive.len() {
+        check_cancelled(cancellation)?;
         let entry = archive.by_index_raw(index).map_err(|error| {
             SignatureClientError::Invalid(format!("Invalid Office ZIP directory: {error}"))
         })?;
@@ -710,6 +753,7 @@ fn stage_archive(
     let mut buffer = vec![0u8; 64 * 1024];
 
     for index in 0..archive.len() {
+        check_cancelled(cancellation)?;
         let (name, declared_size) = {
             let entry = archive.by_index_raw(index).map_err(|error| {
                 SignatureClientError::Invalid(format!("Invalid Office ZIP directory: {error}"))
@@ -729,6 +773,7 @@ fn stage_archive(
                     declared_size,
                     MAX_SIGNATURE_ENTRY_BYTES,
                     "Office signature entry",
+                    cancellation,
                 )?;
                 signature_payload = Some(String::from_utf8_lossy(&payload).into_owned());
             }
@@ -749,6 +794,7 @@ fn stage_archive(
         let mut size = 0u64;
         let mut crc_state = !0u32;
         loop {
+            check_cancelled(cancellation)?;
             let count = entry.read(&mut buffer).map_err(|error| {
                 SignatureClientError::Invalid(format!(
                     "Could not inflate Office ZIP entry {name}: {error}"
@@ -803,7 +849,12 @@ fn stage_archive(
 }
 
 /// Returns true only for containers recognised by the core Office handler.
-pub(super) fn detect_office_input(source: &OpenedStreamFile, head: &[u8]) -> Result<bool> {
+pub(super) fn detect_office_input(
+    source: &OpenedStreamFile,
+    head: &[u8],
+    cancellation: Option<&AtomicBool>,
+) -> Result<bool> {
+    check_cancelled(cancellation)?;
     let mime = source.mime_type().unwrap_or_default();
     if OFFICE_MIME_TYPES.contains(&mime) {
         return Ok(true);
@@ -821,6 +872,7 @@ pub(super) fn detect_office_input(source: &OpenedStreamFile, head: &[u8]) -> Res
     let mut has_ooxml_marker = false;
 
     for index in 0..archive.len() {
+        check_cancelled(cancellation)?;
         let (name, size) = {
             let entry = archive.by_index_raw(index).map_err(|error| {
                 SignatureClientError::Invalid(format!("Invalid ZIP directory: {error}"))
@@ -839,6 +891,7 @@ pub(super) fn detect_office_input(source: &OpenedStreamFile, head: &[u8]) -> Res
                 size,
                 MAX_SIGNATURE_ENTRY_BYTES,
                 "ODF mimetype entry",
+                cancellation,
             )?;
             odf_mimetype = Some(String::from_utf8_lossy(&bytes).trim().to_owned());
         }
@@ -857,9 +910,13 @@ pub(super) fn detect_office_input(source: &OpenedStreamFile, head: &[u8]) -> Res
 }
 
 /// Build the canonical unsigned Office archive on disk.
-pub(super) fn build_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
+pub(super) fn build_plan(
+    source: &OpenedStreamFile,
+    cancellation: Option<&AtomicBool>,
+) -> Result<RewritePlan> {
+    check_cancelled(cancellation)?;
     let workspace = TempWorkspace::create()?;
-    let (entries, envelope_payload) = stage_archive(source, &workspace)?;
+    let (entries, envelope_payload) = stage_archive(source, &workspace, cancellation)?;
     let canonical_path = workspace.path().join("canonical-unsigned.zip");
     let mut canonical = OpenOptions::new()
         .write(true)
@@ -867,7 +924,8 @@ pub(super) fn build_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         .create_new(true)
         .open(&canonical_path)
         .map_err(|error| io_file_error("fileWriteFailed", &canonical_path, error))?;
-    let canonical_size = write_stored_archive(&entries, None, &mut canonical, &workspace)?;
+    let canonical_size =
+        write_stored_archive(&entries, None, &mut canonical, &workspace, cancellation)?;
     canonical
         .sync_all()
         .map_err(|error| io_file_error("fileWriteFailed", &canonical_path, error))?;
@@ -900,6 +958,7 @@ pub(super) fn write_signed_archive(
     plan: &OfficeArchivePlan,
     signature_payload: &str,
     output: &mut File,
+    cancellation: Option<&AtomicBool>,
 ) -> Result<u64> {
     if signature_payload.len() as u64 > MAX_SIGNATURE_ENTRY_BYTES {
         return Err(file_error(
@@ -912,6 +971,7 @@ pub(super) fn write_signed_archive(
         Some(signature_payload.as_bytes()),
         output,
         &plan._workspace,
+        cancellation,
     )
 }
 
@@ -949,6 +1009,7 @@ mod tests {
             Some(b"old-signature"),
             &mut source_zip,
             &workspace,
+            None,
         )
         .unwrap();
         source_zip.sync_all().unwrap();
@@ -971,6 +1032,7 @@ mod tests {
             plan.office_archive.as_ref().unwrap(),
             "new-signature",
             &mut signed_zip,
+            None,
         )
         .unwrap();
         signed_zip.sync_all().unwrap();
@@ -1019,7 +1081,7 @@ mod tests {
         fs::write(&path, b"tampered").unwrap();
         let output_path = workspace.path().join("output.docx");
         let mut output = File::create(&output_path).unwrap();
-        let result = write_stored_archive(&[entry], None, &mut output, &workspace);
+        let result = write_stored_archive(&[entry], None, &mut output, &workspace, None);
         assert!(matches!(
             result,
             Err(SignatureClientError::FileInput {
