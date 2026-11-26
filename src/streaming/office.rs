@@ -595,12 +595,12 @@ fn write_stored_archive(
     })?;
     write_u32(writer.output, 0x0605_4b50)?;
     write_u16(writer.output, 0)?;
-    write_u16(output, 0)?;
-    write_u16(output, count)?;
-    write_u16(output, count)?;
-    write_u32(output, central_size as u32)?;
-    write_u32(output, central_offset as u32)?;
-    write_u16(output, 0)?;
+    write_u16(writer.output, 0)?;
+    write_u16(writer.output, count)?;
+    write_u16(writer.output, count)?;
+    write_u32(writer.output, writer.central_size as u32)?;
+    write_u32(writer.output, central_offset as u32)?;
+    write_u16(writer.output, 0)?;
     writer.output_position = writer
         .output_position
         .checked_add(22)
