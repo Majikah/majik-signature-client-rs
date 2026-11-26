@@ -566,6 +566,9 @@ fn report_stream_progress(
     Ok(())
 }
 
+// This helper intentionally receives the file, output, hash, and progress state separately so
+// each bounded-copy step can update the canonical digest and caller-visible progress.
+#[allow(clippy::too_many_arguments)]
 fn copy_source_segment(
     file: &mut File,
     output: &mut File,
@@ -725,21 +728,21 @@ where
             }
         }
     };
-    let mut hash_options = StreamingHashOptions {
-        chunk_size,
-        threshold_bytes: 0,
-        max_bytes,
-        total_bytes: Some(total_bytes),
-        cancellation,
-        on_progress: if with_progress {
-            Some(&mut guarded_progress)
-        } else {
-            None
-        },
+    let operation_result = {
+        let mut hash_options = StreamingHashOptions {
+            chunk_size,
+            threshold_bytes: 0,
+            max_bytes,
+            total_bytes: Some(total_bytes),
+            cancellation,
+            on_progress: if with_progress {
+                Some(&mut guarded_progress)
+            } else {
+                None
+            },
+        };
+        catch_unwind(AssertUnwindSafe(|| operation(&mut hash_options)))
     };
-    let operation_result = catch_unwind(AssertUnwindSafe(|| operation(&mut hash_options)));
-    drop(hash_options);
-    drop(guarded_progress);
     let value =
         match operation_result {
             Ok(Ok(value)) => value,
@@ -1517,7 +1520,7 @@ impl SignatureClient {
             ));
         }
         stream.validate()?;
-        let mut source = OpenedStreamFile::open(&input_path, options.mime_type.as_deref())?;
+        let source = OpenedStreamFile::open(&input_path, options.mime_type.as_deref())?;
         ensure_distinct_paths(source.path(), envelope_output_path.as_ref())?;
         if let Some(max) = stream.max_bytes {
             if source.length() > max {
@@ -1633,7 +1636,7 @@ impl SignatureClient {
         source: HistorySource,
     ) -> Result<VerifyResult> {
         stream.validate()?;
-        let mut file = OpenedStreamFile::open(&input_path, target.mime_type)?;
+        let file = OpenedStreamFile::open(&input_path, target.mime_type)?;
         if let Some(max) = stream.max_bytes {
             if file.length() > max {
                 return Err(file_error(
@@ -1798,7 +1801,7 @@ impl SignatureClient {
         let embedded_payload = serialize_embedded_envelope(&envelope)?;
         let replacement = pdf_or_mp4_output_replacement(&plan, &embedded_payload)?;
         let output = write_atomic_with(output_path, overwrite, |destination| {
-            let mut input = source.file_mut();
+            let input = source.file_mut();
             write_rewritten_and_check(
                 input,
                 destination,
@@ -1837,7 +1840,7 @@ impl SignatureClient {
         source: HistorySource,
     ) -> Result<VerifyResult> {
         stream.validate()?;
-        let mut file = OpenedStreamFile::open(&input_path, target.mime_type)?;
+        let file = OpenedStreamFile::open(&input_path, target.mime_type)?;
         if let Some(max) = stream.max_bytes {
             if file.length() > max {
                 return Err(file_error(
