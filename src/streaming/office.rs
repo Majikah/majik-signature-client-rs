@@ -421,7 +421,7 @@ fn write_archive_entry(
         SignatureClientError::Invalid(format!("Could not write canonical Office ZIP: {error}"))
     })?;
 
-    *output_position = output_position
+    *output_position = (*output_position)
         .checked_add(30 + name_bytes.len() as u64)
         .ok_or_else(|| file_error("fileTooLarge", "Canonical Office ZIP size overflowed."))?;
     if let Some(path) = path {
@@ -460,7 +460,7 @@ fn write_archive_entry(
         SignatureClientError::Invalid(format!("Could not write Office ZIP central directory: {error}"))
     })?;
 
-    *central_size = central_size
+    *central_size = (*central_size)
         .checked_add(46 + name_bytes.len() as u64)
         .ok_or_else(|| file_error("fileTooLarge", "Office ZIP central directory size overflowed."))?;
     if *central_size > MAX_CENTRAL_DIRECTORY_BYTES {
@@ -865,7 +865,7 @@ mod tests {
         let source_bytes = fs::read(&source_path).unwrap();
         let source = OpenedStreamFile::open(&source_path, Some(mime)).unwrap();
         let plan = build_plan(&source).unwrap();
-        assert_eq!(plan.envelope_payload(), Some("old-signature"));
+        assert_eq!(plan.office_archive.as_ref().unwrap().envelope_payload(), Some("old-signature"));
         let canonical = fs::read(plan.canonical_path()).unwrap();
         let expected = MajikSignature::strip_from(&source_bytes, Some(mime)).unwrap();
         assert_eq!(canonical, expected);
@@ -887,7 +887,7 @@ mod tests {
 
         let signed_source = OpenedStreamFile::open(&signed_path, Some(mime)).unwrap();
         let signed_plan = build_plan(&signed_source).unwrap();
-        assert_eq!(signed_plan.envelope_payload(), Some("new-signature"));
+        assert_eq!(signed_plan.office_archive.as_ref().unwrap().envelope_payload(), Some("new-signature"));
         assert_eq!(fs::read(signed_plan.canonical_path()).unwrap(), expected);
     }
 
