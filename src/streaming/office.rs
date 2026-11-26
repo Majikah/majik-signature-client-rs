@@ -380,7 +380,10 @@ fn copy_staged_entry(
             break;
         }
         copied = copied.checked_add(count as u64).ok_or_else(|| {
-            file_error("fileChanged", "A staged Office ZIP entry size overflowed while copying.")
+            file_error(
+                "fileChanged",
+                "A staged Office ZIP entry size overflowed while copying.",
+            )
         })?;
         if copied > expected_size {
             return Err(file_error(
@@ -1021,7 +1024,10 @@ mod tests {
         let result = write_stored_archive(&[entry], None, &mut output, &workspace);
         assert!(matches!(
             result,
-            Err(SignatureClientError::FileInput { kind: "fileChanged", .. })
+            Err(SignatureClientError::FileInput {
+                kind: "fileChanged",
+                ..
+            })
         ));
     }
 
