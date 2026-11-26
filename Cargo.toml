@@ -8,12 +8,12 @@ license = "Apache-2.0"
 
 [dependencies]
 # Switch the two path dependencies to crates.io versions once they are published.
-majik-key-client = "0.2.1"
+majik-key-client = "1.0.0"
 majik-contact = { version = "=0.2.0", default-features = false }
 flate2 = "1.1.11"
 zip = { version = "9.8.2", default-features = false, features = ["deflate"] }
-rusqlite = "0.40"
-majik-key = "1.1.1"
+rusqlite = "0.43"
+majik-key = "1.2.0"
 majik-signature = "1.4.0"
 majik-file = "1.1.0"
 majik-cjson = "1.0.0"
@@ -28,7 +28,7 @@ jiff = "1.0.3"
 uuid = { version = "1.29.3", features = ["v4"] }
 
 [dev-dependencies]
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.43", features = ["bundled"] }
 
 [profile.dev.package."*"]
 opt-level = 3
