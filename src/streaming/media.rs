@@ -68,7 +68,7 @@ pub(super) fn detect_format(source: &OpenedStreamFile, head: &[u8]) -> Option<&'
         return Some("flac");
     }
     if matches!(mime, "audio/wav" | "audio/wave" | "audio/x-wav")
-        || head.starts_with(WAV_RIFF) && head.get(8..12) == Some(WAV_WAVE)
+        || head.starts_with(WAV_RIFF) && head.get(8..12) == Some(&WAV_WAVE[..])
     {
         return Some("wav");
     }
@@ -621,12 +621,6 @@ fn parse_flac_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
 
 
 // WAV: metadata chunks are bounded and audio data chunks are skipped by offset.
-#[derive(Clone)]
-struct WavChunk {
-    kind: [u8; 4],
-    raw: Vec<u8>,
-}
-
 fn parse_wav_info_list(data: &[u8]) -> Result<Option<(Vec<u8>, Option<String>)>> {
     if data.len() < 4 || &data[..4] != b"INFO" {
         return Ok(None);
@@ -667,22 +661,9 @@ fn parse_wav_info_list(data: &[u8]) -> Result<Option<(Vec<u8>, Option<String>)>>
             if signature.is_some() {
                 return Err(SignatureClientError::Invalid("WAV contains multiple Majik ISIG metadata chunks".into()));
             }
-            if size < 4 {
-                return Err(SignatureClientError::Invalid("WAV Majik ISIG chunk is missing its payload length".into()));
-            }
-            let payload_len = u32::from_le_bytes([
-                data[offset + 8],
-                data[offset + 9],
-                data[offset + 10],
-                data[offset + 11],
-            ]) as usize;
-            if payload_len > size - 4 {
-                return Err(SignatureClientError::Invalid("WAV Majik ISIG payload length exceeds its chunk boundary".into()));
-            }
-            let payload = std::str::from_utf8(&data[offset + 12..offset + 12 + payload_len])
-                .map_err(|error| SignatureClientError::Invalid(format!("WAV Majik signature payload is not UTF-8: {error}")))?
-                .to_owned();
-            signature = Some(payload);
+            let encoded = std::str::from_utf8(&data[offset + 8..offset + 8 + size])
+                .map_err(|error| SignatureClientError::Invalid(format!("WAV Majik signature payload is not UTF-8: {error}")))?;
+            signature = Some(encoded.trim_end_matches('\0').to_owned());
         } else {
             kept.extend_from_slice(&data[offset..end]);
         }
@@ -817,8 +798,7 @@ fn build_wav_signature_chunk(payload: &str) -> Result<Vec<u8>> {
     let mut list_data = Vec::with_capacity(4 + 8 + padded_len);
     list_data.extend_from_slice(b"INFO");
     list_data.extend_from_slice(b"ISIG");
-    list_data.extend_from_slice(&(4u32 + padded_len as u32).to_le_bytes());
-    list_data.extend_from_slice(&payload_len.to_le_bytes());
+    list_data.extend_from_slice(&(padded_len as u32).to_le_bytes());
     list_data.extend_from_slice(payload.as_bytes());
     if payload.len() % 2 == 1 {
         list_data.push(0);
