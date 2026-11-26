@@ -1130,6 +1130,33 @@ mod tests {
     }
 
     #[test]
+    fn jpeg_existing_signature_is_found_after_other_header_markers() {
+        let path = fixture_path("jpg");
+        let mut jpeg = JPEG_SOI.to_vec();
+        // A valid APP1 segment with three bytes of payload.
+        jpeg.extend_from_slice(&[0xff, 0xe1, 0x00, 0x05, 0x01, 0x02, 0x03]);
+        jpeg.extend_from_slice(&build_jpeg_signature_segment("existing-envelope").unwrap());
+        jpeg.extend_from_slice(&[0xff, 0xd9]);
+        std::fs::write(&path, &jpeg).unwrap();
+
+        let source = OpenedStreamFile::open(&path, Some("image/jpeg")).unwrap();
+        let plan = build_plan(&source, "jpeg").unwrap();
+        assert_eq!(
+            plan.envelope_payload.as_deref(),
+            Some("existing-envelope")
+        );
+
+        let mut reader =
+            RewrittenFileReader::new(source.try_clone_file().unwrap(), &plan).unwrap();
+        let mut streamed_canonical = Vec::new();
+        reader.read_to_end(&mut streamed_canonical).unwrap();
+        let core_canonical = MajikSignature::strip_from(&jpeg, Some("image/jpeg")).unwrap();
+        assert_eq!(streamed_canonical, core_canonical);
+
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn mp3_streaming_metadata_matches_core_handler() {
         // A small MPEG frame-sync fixture; media bytes are not buffered by the parser.
         assert_streaming_round_trip(
