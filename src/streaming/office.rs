@@ -44,7 +44,10 @@ impl TempWorkspace {
     fn create() -> Result<Self> {
         let base = std::env::temp_dir();
         for _ in 0..8 {
-            let path = base.join(format!("majik-office-stream-{}", uuid::Uuid::new_v4().simple()));
+            let path = base.join(format!(
+                "majik-office-stream-{}",
+                uuid::Uuid::new_v4().simple()
+            ));
             let create_result = {
                 #[cfg(unix)]
                 {
