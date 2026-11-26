@@ -167,7 +167,7 @@ fn write_stored_archive(
     output: &mut File,
     workspace: &TempWorkspace,
 ) -> Result<u64> {
-    if entries.len() + usize::from(signature.is_some()) > MAX_ZIP_ENTRIES {
+    if entries.len() + if signature.is_some() { 1 } else { 0 } > MAX_ZIP_ENTRIES {
         return Err(file_error(
             "fileTooLarge",
             "Office ZIP has too many entries for the canonical non-ZIP64 representation.",
@@ -313,7 +313,7 @@ fn write_stored_archive(
         .checked_add(copied)
         .ok_or_else(|| file_error("fileTooLarge", "Canonical Office ZIP size overflowed."))?;
 
-    let count = u16::try_from(entries.len() + usize::from(signature.is_some())).map_err(|_| {
+    let count = u16::try_from(entries.len() + if signature.is_some() { 1 } else { 0 }).map_err(|_| {
         file_error("fileTooLarge", "Office ZIP has too many entries for its end record.")
     })?;
     write_u32(output, 0x0605_4b50)?;
@@ -589,7 +589,7 @@ mod tests {
 
         let workspace = TempWorkspace::create().unwrap();
         let mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
-        let mut make_entry = |name: &str, bytes: &[u8], index: usize| {
+        let make_entry = |name: &str, bytes: &[u8], index: usize| {
             let path = workspace.path().join(format!("input-entry-{index}.bin"));
             fs::write(&path, bytes).unwrap();
             StagedEntry {
