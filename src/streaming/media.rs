@@ -107,7 +107,15 @@ pub(super) fn output_replacement(plan: &RewritePlan, payload: &str) -> Result<Op
             &plan.canonical_replacement,
             payload,
         )?),
-        "WAV" => Some(build_wav_signature_chunk(payload)?),
+        "WAV" => {
+            // Match the core WavHandler: strip the old ISIG chunk while retaining other INFO
+            // chunks, then append a fresh LIST/INFO/ISIG signature block.
+            let signature = build_wav_signature_chunk(payload)?;
+            let mut rewritten = Vec::with_capacity(plan.canonical_replacement.len() + signature.len());
+            rewritten.extend_from_slice(&plan.canonical_replacement);
+            rewritten.extend_from_slice(&signature);
+            Some(rewritten)
+        },
         _ => None,
     };
     Ok(output)
