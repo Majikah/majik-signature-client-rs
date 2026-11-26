@@ -456,6 +456,8 @@ struct RewritePlan {
     has_mp4_moov: bool,
     /// True when an mdat precedes moov, so extending moov does not shift media chunk offsets.
     mp4_moov_after_mdat: bool,
+    /// Canonical RIFF size field bytes for WAV (the unsigned form is normalised to its true length).
+    riff_size_patch: Option<[u8; 4]>,
 }
 
 impl RewritePlan {
@@ -480,6 +482,7 @@ struct RewrittenFileReader {
     replace_start: u64,
     replace_end: u64,
     replacement: Vec<u8>,
+    riff_size_patch: Option<[u8; 4]>,
     position: u64,
     virtual_len: u64,
 }
@@ -493,9 +496,23 @@ impl RewrittenFileReader {
             replace_start: plan.replace_start,
             replace_end: plan.replace_end,
             replacement: plan.canonical_replacement.clone(),
+            riff_size_patch: plan.riff_size_patch,
             position: 0,
             virtual_len,
         })
+    }
+
+    fn apply_riff_size_patch(&self, physical_start: u64, bytes: &mut [u8]) {
+        let Some(patch) = self.riff_size_patch else { return; };
+        let read_end = physical_start.saturating_add(bytes.len() as u64);
+        let overlap_start = physical_start.max(4);
+        let overlap_end = read_end.min(8);
+        if overlap_start >= overlap_end { return; }
+        let destination_start = (overlap_start - physical_start) as usize;
+        let destination_end = (overlap_end - physical_start) as usize;
+        let patch_start = (overlap_start - 4) as usize;
+        let patch_end = (overlap_end - 4) as usize;
+        bytes[destination_start..destination_end].copy_from_slice(&patch[patch_start..patch_end]);
     }
 }
 
@@ -521,6 +538,7 @@ impl Read for RewrittenFileReader {
             let count = output.len().min(distance.min(usize::MAX as u64) as usize);
             self.file.seek(SeekFrom::Start(self.position))?;
             let read = self.file.read(&mut output[..count])?;
+            self.apply_riff_size_patch(self.position, &mut output[..read]);
             self.position += read as u64;
             return Ok(read);
         }
@@ -544,6 +562,7 @@ impl Read for RewrittenFileReader {
         let count = output.len().min(distance.min(usize::MAX as u64) as usize);
         self.file.seek(SeekFrom::Start(physical))?;
         let read = self.file.read(&mut output[..count])?;
+        self.apply_riff_size_patch(physical, &mut output[..read]);
         self.position += read as u64;
         Ok(read)
     }
@@ -580,6 +599,7 @@ fn copy_source_segment(
     options: &mut StreamingFileOptions<'_>,
     processed: &mut u64,
     total: u64,
+    riff_size_patch: Option<[u8; 4]>,
 ) -> Result<u64> {
     file.seek(SeekFrom::Start(start)).map_err(|error| {
         file_error(
@@ -604,6 +624,19 @@ fn copy_source_segment(
                 "fileChanged",
                 "The source file ended before the expected byte range was copied.",
             ));
+        }
+        if let Some(patch) = riff_size_patch {
+            let physical_start = start + (length - remaining);
+            let read_end = physical_start.saturating_add(count as u64);
+            let overlap_start = physical_start.max(4);
+            let overlap_end = read_end.min(8);
+            if overlap_start < overlap_end {
+                let destination_start = (overlap_start - physical_start) as usize;
+                let destination_end = (overlap_end - physical_start) as usize;
+                let patch_start = (overlap_start - 4) as usize;
+                let patch_end = (overlap_end - 4) as usize;
+                buffer[destination_start..destination_end].copy_from_slice(&patch[patch_start..patch_end]);
+            }
         }
         output.write_all(&buffer[..count]).map_err(|error| {
             file_error(
@@ -648,6 +681,7 @@ fn write_rewritten_and_check(
             options,
             &mut processed,
             total_canonical,
+            plan.riff_size_patch,
         )?)
         .ok_or_else(|| SignatureClientError::Invalid("Output byte count overflowed".into()))?;
 
@@ -683,6 +717,7 @@ fn write_rewritten_and_check(
             options,
             &mut processed,
             total_canonical,
+            plan.riff_size_patch,
         )?)
         .ok_or_else(|| SignatureClientError::Invalid("Output byte count overflowed".into()))?;
 
@@ -696,6 +731,17 @@ fn write_rewritten_and_check(
         return Err(SignatureClientError::Invalid(
             "The source changed after it was signed. No output was published; please retry.".into(),
         ));
+    }
+    if plan.handler == "WAV" {
+        let riff_size = total_output.checked_sub(8).ok_or_else(|| {
+            SignatureClientError::Invalid("WAV output is shorter than its RIFF header".into())
+        })?;
+        let riff_size = u32::try_from(riff_size).map_err(|_| {
+            SignatureClientError::Invalid("WAV output exceeds the 32-bit RIFF size limit; RF64 is not supported by the core WAV handler".into())
+        })?;
+        output.seek(SeekFrom::Start(4)).map_err(|error| file_error("fileWriteFailed", error.to_string()))?;
+        output.write_all(&riff_size.to_le_bytes()).map_err(|error| file_error("fileWriteFailed", error.to_string()))?;
+        output.seek(SeekFrom::End(0)).map_err(|error| file_error("fileWriteFailed", error.to_string()))?;
     }
     Ok(total_output)
 }
@@ -821,6 +867,7 @@ fn parse_pdf_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         mime_type: "application/pdf".to_string(),
         has_mp4_moov: false,
         mp4_moov_after_mdat: false,
+        riff_size_patch: None,
     })
 }
 
@@ -1155,6 +1202,7 @@ fn parse_mp4_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
                 mime_type: "video/mp4".to_string(),
                 has_mp4_moov: true,
                 mp4_moov_after_mdat: seen_mdat && offset.checked_add(box_size) == Some(len),
+                riff_size_patch: None,
             });
         }
         offset += box_size;
@@ -1178,6 +1226,7 @@ fn parse_mp4_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         mime_type: "video/mp4".to_string(),
         has_mp4_moov: false,
         mp4_moov_after_mdat: false,
+        riff_size_patch: None,
     })
 }
 
@@ -1250,7 +1299,7 @@ fn build_rewrite_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
     match format {
         "pdf" => parse_pdf_plan(source),
         "mp4" => parse_mp4_plan(source),
-        "png" | "jpeg" | "mp3" | "flac" => media::build_plan(source, format),
+        "png" | "jpeg" | "mp3" | "flac" | "wav" => media::build_plan(source, format),
         _ => {
             let mut file = source.try_clone_file()?;
             let trailer = read_universal_trailer(&mut file, source.length(), source.path())?;
@@ -1270,6 +1319,8 @@ fn build_rewrite_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
                     .to_string(),
                 has_mp4_moov: false,
                 mp4_moov_after_mdat: false,
+        riff_size_patch: None,
+                riff_size_patch: None,
             })
         }
     }
@@ -1515,7 +1566,7 @@ fn pdf_or_mp4_output_replacement(plan: &RewritePlan, payload: &str) -> Result<Ve
                 embed_mp4_moov(&plan.canonical_replacement, payload)
             }
         }
-        "PNG" | "JPEG" | "MP3" | "FLAC" => {
+        "PNG" | "JPEG" | "MP3" | "FLAC" | "WAV" => {
             media::output_replacement(plan, payload)?.ok_or_else(|| {
                 SignatureClientError::Invalid("The media streaming handler did not produce signature metadata".into())
             })
@@ -1774,7 +1825,7 @@ impl SignatureClient {
             }
         }
         let plan = build_rewrite_plan(&source)?;
-        if !matches!(plan.handler, "PDF" | "MP4/MOV" | "PNG" | "JPEG" | "MP3" | "FLAC" | "Fallback (Universal Trailer)") {
+        if !matches!(plan.handler, "PDF" | "MP4/MOV" | "PNG" | "JPEG" | "MP3" | "FLAC" | "WAV" | "Fallback (Universal Trailer)") {
             return Err(SignatureClientError::Invalid(
                 "Large-file embedded signing is currently supported for PDF, MP4/MOV, PNG, JPEG, MP3, FLAC, and universal-trailer formats. This specialised container is not yet supported by the streaming writer.".into(),
             ));
@@ -1914,7 +1965,7 @@ impl SignatureClient {
             }
         }
         let plan = build_rewrite_plan(&file)?;
-        if !matches!(plan.handler, "PDF" | "MP4/MOV" | "PNG" | "JPEG" | "MP3" | "FLAC" | "Fallback (Universal Trailer)") {
+        if !matches!(plan.handler, "PDF" | "MP4/MOV" | "PNG" | "JPEG" | "MP3" | "FLAC" | "WAV" | "Fallback (Universal Trailer)") {
             return Err(SignatureClientError::Invalid(
                 "Embedded streaming verification is not available for this specialised container"
                     .into(),
@@ -2168,6 +2219,7 @@ mod tests {
             mime_type: "application/octet-stream".to_string(),
             has_mp4_moov: false,
             mp4_moov_after_mdat: false,
+        riff_size_patch: None,
         };
         let mut reader = RewrittenFileReader::new(file, &plan).unwrap();
         let mut result = Vec::new();
