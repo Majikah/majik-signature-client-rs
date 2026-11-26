@@ -49,20 +49,22 @@ println!("Signed {} bytes", result.source_size_bytes);
 
 | Operation | Supported content | Notes |
 |---|---|---|
-| Detached sign / verify | PDF, MP4/MOV, PNG, JPEG, MP3, FLAC, WAV, Matroska/WebM, and formats using the core universal-trailer fallback | The reader uses each format's existing canonical representation. Specialised formats that require a full-buffer canonicalizer (text/markup, MSIX/AppX, and Office/ODF ZIP containers) are rejected rather than silently hashed as raw bytes. |
+| Detached sign / verify | PDF, MP4/MOV, PNG, JPEG, MP3, FLAC, WAV, OOXML/ODF Office files, Matroska/WebM, and formats using the core universal-trailer fallback | Uses each format's existing canonical representation. Large media payloads are hashed in chunks. Office ZIP entries are inflated and staged to disk, then rebuilt into the core deterministic stored-ZIP canonical form. |
 | Embedded sign / verify | PDF | Appends/replaces the Majik PDF signature trailer while streaming the document. |
 | Embedded sign / verify | MP4/MOV | Rewrites only bounded ISO-BMFF moov metadata and streams large media payload boxes unchanged. A final moov after mdat is required when the moov must grow; fast-start layouts with moov before mdat, or later boxes after moov, are rejected rather than risking stale absolute chunk offsets. Containers without moov use the universal trailer. |
 | Embedded sign / verify | PNG/JPEG | Writes Majik's existing PNG iTXt or JPEG APP15 metadata. Image pixel data is streamed unchanged. |
 | Embedded sign / verify | MP3/FLAC/WAV | Rewrites only the bounded ID3, FLAC metadata, or RIFF/INFO metadata. Compressed audio/sample data is streamed unchanged. RF64 WAV is not supported by the existing core WAV format handler and is rejected safely. |
+| Embedded sign / verify | OOXML/ODF Office files | Rebuilds the deterministic canonical ZIP from disk-staged entries and appends/replaces the final majik-signature.json entry. The full uncompressed archive is never materialised in memory. |
 | Embedded sign / verify | Matroska/WebM | Uses the existing universal trailer representation; the EBML/media payload is streamed unchanged. |
 
-The default chunk size is 1 MiB (configurable from 64 KiB to 8 MiB). The default streaming API has no arbitrary total input-size cap; callers can set max_bytes. Format metadata is separately bounded (32 MiB for container metadata and 16 MiB for embedded envelopes). These bounds are on metadata, not the large media payload.
+The default chunk size is 1 MiB (configurable from 64 KiB to 8 MiB). The default streaming API has no arbitrary total input-size cap for ordinary files; callers can set max_bytes. Format metadata is separately bounded (32 MiB for container metadata and 16 MiB for embedded envelopes). Office ZIP processing retains the core 512 MiB total uncompressed-content ceiling, and the streaming implementation adds a 32 MiB central-directory safety limit. These are metadata/archive safety bounds, not arbitrary caps on standalone large media payloads.
 
 ### Path-backed revision signing
 
-Both embedded and detached signing have explicit *_stream_with_prior variants. They accept native paths for the prior file, verify the previous signature and current revision-chain head using reader-based hashing/verification, and then append the next FileVersion and version-chain commitment. Detached revision signing also requires the prior .mjksig envelope in existing_envelope; that envelope is small metadata, while the prior media bytes remain path-backed. The byte-array priorFile / priorSignedFile options are intentionally rejected by streaming operations to prevent accidentally materialising a multi-gigabyte file.
+Both embedded and detached signing have explicit *_stream_with_prior variants. They accept native paths for the prior file, verify the previous signature and current revision-chain head using reader-based hashing/verification, and then append the next FileVersion and version-chain commitment. Detached revision signing also requires the prior .mjksig envelope in existing_envelope; the prior file bytes remain path-backed. The byte-array priorFile / priorSignedFile options are intentionally rejected by streaming operations.
 
-Text/markup, MSIX/AppX, and Office/ODF ZIP containers remain on the legacy APIs because their current core handlers canonicalise by rewriting text or rebuilding ZIP archives. They are explicitly rejected by the streaming path until a reader/writer implementation can reproduce the core output byte-for-byte. The legacy FileInput::load() and byte-slice APIs retain their existing 1 GiB in-memory safety ceiling; this PR does not remove that limit globally.
+MSIX/AppX packages and text/markup formats remain explicitly rejected by the streaming API. MSIX packages have separate package-signature semantics; text/markup canonicalisation still requires a dedicated streaming normalizer. They remain on legacy APIs, whose byte-slice paths retain the existing 1 GiB in-memory safety ceiling. This PR does not remove that limit globally.
+
 
 Streaming operations record signature/history metadata but intentionally do not copy a multi-gigabyte source into the encrypted history blob. The new APIs are additive. Tauri command exposure, progress events, cancellation commands, and desktop integration belong in the subsequent plugin/application changes.
 ---
@@ -72,7 +74,7 @@ Streaming operations record signature/history metadata but intentionally do not 
 | `client` | construction (`in_memory`, `with_sqlite`), TS-order hydration, preferences, logs, own-account meta, contact + group API with events and audit entries |
 | `signing` | `with_signing_key`, signing sessions, signer resolution, content sign/verify |
 | `files` | embedded/detached byte-slice signing, batch signing, verification, revisions, seals, allowlists, signatories, envelope info |
-| `streaming` | path-backed detached signing / verification, bounded-memory media embedding (PDF, MP4/MOV, PNG/JPEG, MP3/FLAC/WAV, Matroska/WebM), and path-backed revisions |
+| `streaming` | path-backed detached / embedded signing, bounded-memory media and Office ZIP canonicalisation, and path-backed revisions |
 | `mjks` | `.mjksmap` read/describe/sign/cosign/verify, signing-order verification |
 | `stamps`, `stamps_api` | encrypted stamps (`MajikFile` envelopes), repositories (`majik_signature_stamps`), manager, client API |
 | `backup` | `STMP` / `MJKC` / `MJKA` backups (magic header + `majik-cjson`), read / restore / selective restore |

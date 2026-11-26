@@ -8,12 +8,14 @@
 //! is held in memory; large image, audio, and video payloads are copied and hashed in chunks.
 
 mod media;
+mod office;
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 use jiff::Timestamp;
@@ -459,10 +461,15 @@ struct RewritePlan {
     mp4_moov_after_mdat: bool,
     /// Canonical RIFF size field bytes for WAV (the unsigned form is normalised to its true length).
     riff_size_patch: Option<[u8; 4]>,
+    /// Disk-backed canonical ZIP representation for Office/ODF files.
+    office_archive: Option<Arc<office::OfficeArchivePlan>>,
 }
 
 impl RewritePlan {
     fn canonical_len(&self) -> Result<u64> {
+        if let Some(office) = self.office_archive.as_ref() {
+            return Ok(office.canonical_size());
+        }
         if self.replace_start > self.replace_end || self.replace_end > self.source_len {
             return Err(SignatureClientError::Invalid(
                 "Invalid source rewrite range".into(),
@@ -489,10 +496,24 @@ struct RewrittenFileReader {
 }
 
 impl RewrittenFileReader {
-    fn new(file: File, plan: &RewritePlan) -> Result<Self> {
+    fn new(source_file: File, plan: &RewritePlan) -> Result<Self> {
         let virtual_len = plan.canonical_len()?;
+        if let Some(office) = plan.office_archive.as_ref() {
+            let file = File::open(office.canonical_path())
+                .map_err(|error| io_file_error("fileUnreadable", office.canonical_path(), error))?;
+            return Ok(Self {
+                file,
+                source_len: virtual_len,
+                replace_start: virtual_len,
+                replace_end: virtual_len,
+                replacement: Vec::new(),
+                riff_size_patch: None,
+                position: 0,
+                virtual_len,
+            });
+        }
         Ok(Self {
-            file,
+            file: source_file,
             source_len: plan.source_len,
             replace_start: plan.replace_start,
             replace_end: plan.replace_end,
@@ -880,6 +901,7 @@ fn parse_pdf_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         has_mp4_moov: false,
         mp4_moov_after_mdat: false,
         riff_size_patch: None,
+        office_archive: None,
     })
 }
 
@@ -1215,6 +1237,7 @@ fn parse_mp4_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
                 has_mp4_moov: true,
                 mp4_moov_after_mdat: seen_mdat && offset.checked_add(box_size) == Some(len),
                 riff_size_patch: None,
+                office_archive: None,
             });
         }
         offset += box_size;
@@ -1239,6 +1262,7 @@ fn parse_mp4_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         has_mp4_moov: false,
         mp4_moov_after_mdat: false,
         riff_size_patch: None,
+        office_archive: None,
     })
 }
 
@@ -1264,6 +1288,9 @@ fn detect_stream_format(source: &OpenedStreamFile) -> Result<&'static str> {
     if let Some(format) = media::detect_format(source, &head) {
         return Ok(format);
     }
+    if office::detect_office_input(source, &head)? {
+        return Ok("office");
+    }
 
     // Text and ZIP-based document formats retain specialised canonicalisation in the core
     // library. Never hash these as opaque bytes: doing so would silently diverge from verify().
@@ -1285,9 +1312,6 @@ fn detect_stream_format(source: &OpenedStreamFile) -> Result<&'static str> {
                 | "application/vnd.ms-word.document.macroEnabled.12"
                 | "application/vnd.ms-excel.sheet.macroEnabled.12"
                 | "application/vnd.ms-powerpoint.presentation.macroEnabled.12"
-                | "application/vnd.oasis.opendocument.text"
-                | "application/vnd.oasis.opendocument.spreadsheet"
-                | "application/vnd.oasis.opendocument.presentation"
                 | "audio/wav"
                 | "audio/wave"
                 | "audio/x-wav"
@@ -1312,6 +1336,7 @@ fn build_rewrite_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
         "pdf" => parse_pdf_plan(source),
         "mp4" => parse_mp4_plan(source),
         "png" | "jpeg" | "mp3" | "flac" | "wav" => media::build_plan(source, format),
+        "office" => office::build_plan(source),
         _ => {
             let mut file = source.try_clone_file()?;
             let trailer = read_universal_trailer(&mut file, source.length(), source.path())?;
@@ -1332,6 +1357,7 @@ fn build_rewrite_plan(source: &OpenedStreamFile) -> Result<RewritePlan> {
                 has_mp4_moov: false,
                 mp4_moov_after_mdat: false,
                 riff_size_patch: None,
+                office_archive: None,
             })
         }
     }
@@ -2014,6 +2040,7 @@ impl SignatureClient {
         if !matches!(
             plan.handler,
             "PDF"
+                | "Office (DOCX/XLSX/PPTX/ODF)"
                 | "MP4/MOV"
                 | "PNG"
                 | "JPEG"
@@ -2125,18 +2152,24 @@ impl SignatureClient {
         let ((signature, envelope), _) = self.report("signFileEmbeddedStream", sign_result)?;
         source.ensure_unchanged()?;
         let embedded_payload = serialize_embedded_envelope(&envelope)?;
-        let replacement = pdf_or_mp4_output_replacement(&plan, &embedded_payload)?;
-        let output = write_atomic_with(output_path, overwrite, |destination| {
-            let input = source.file_mut();
-            write_rewritten_and_check(
-                input,
-                destination,
-                &plan,
-                &replacement,
-                signature.content_hash(),
-                stream,
-            )
-        })?;
+        let output = if let Some(office_archive) = plan.office_archive.as_ref() {
+            write_atomic_with(output_path, overwrite, |destination| {
+                office::write_signed_archive(office_archive, &embedded_payload, destination)
+            })?
+        } else {
+            let replacement = pdf_or_mp4_output_replacement(&plan, &embedded_payload)?;
+            write_atomic_with(output_path, overwrite, |destination| {
+                let input = source.file_mut();
+                write_rewritten_and_check(
+                    input,
+                    destination,
+                    &plan,
+                    &replacement,
+                    signature.content_hash(),
+                    stream,
+                )
+            })?
+        };
         source.ensure_unchanged()?;
         sign_event_and_history(self, &signature, &envelope, context.source, false);
         Ok(StreamingEmbeddedSignResult {
@@ -2179,6 +2212,7 @@ impl SignatureClient {
         if !matches!(
             plan.handler,
             "PDF"
+                | "Office (DOCX/XLSX/PPTX/ODF)"
                 | "MP4/MOV"
                 | "PNG"
                 | "JPEG"
@@ -2539,6 +2573,7 @@ mod tests {
             has_mp4_moov: false,
             mp4_moov_after_mdat: false,
             riff_size_patch: None,
+            office_archive: None,
         };
         let mut reader = RewrittenFileReader::new(file, &plan).unwrap();
         let mut result = Vec::new();

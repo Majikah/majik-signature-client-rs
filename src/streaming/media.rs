@@ -47,6 +47,7 @@ fn make_plan(
         has_mp4_moov: false,
         mp4_moov_after_mdat: false,
         riff_size_patch: None,
+        office_archive: None,
     }
 }
 
