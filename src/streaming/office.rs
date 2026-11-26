@@ -242,6 +242,46 @@ fn is_msix_name(name: &str) -> bool {
     MSIX_PACKAGE_ENTRIES.contains(&name)
 }
 
+fn read_entry_bounded(
+    entry: &mut impl Read,
+    declared_size: u64,
+    maximum_size: u64,
+    label: &str,
+) -> Result<Vec<u8>> {
+    if declared_size > maximum_size {
+        return Err(file_error(
+            "fileTooLarge",
+            format!("{label} exceeds its {maximum_size}-byte safety limit."),
+        ));
+    }
+    let capacity = usize::try_from(declared_size)
+        .map_err(|_| file_error("fileTooLarge", format!("{label} size cannot be represented.")))?;
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut buffer = [0u8; 8192];
+    loop {
+        let count = entry.read(&mut buffer).map_err(|error| {
+            SignatureClientError::Invalid(format!("Could not inflate {label}: {error}"))
+        })?;
+        if count == 0 {
+            break;
+        }
+        if bytes.len().saturating_add(count) > capacity {
+            return Err(file_error(
+                "fileTooLarge",
+                format!("{label} inflated beyond its declared ZIP entry size."),
+            ));
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+    }
+    if bytes.len() != capacity {
+        return Err(SignatureClientError::Invalid(format!(
+            "{label} inflated to {} bytes but its ZIP directory declares {declared_size}.",
+            bytes.len()
+        )));
+    }
+    Ok(bytes)
+}
+
 fn update_crc32(mut crc: u32, bytes: &[u8]) -> u32 {
     for byte in bytes {
         crc ^= *byte as u32;
@@ -507,13 +547,12 @@ fn stage_archive(
                 let mut entry = archive.by_index(index).map_err(|error| {
                     SignatureClientError::Invalid(format!("Could not read Office signature entry: {error}"))
                 })?;
-                let mut payload = Vec::with_capacity(declared_size as usize);
-                entry.read_to_end(&mut payload).map_err(|error| {
-                    SignatureClientError::Invalid(format!("Could not inflate Office signature entry: {error}"))
-                })?;
-                if payload.len() as u64 != declared_size {
-                    return Err(file_error("fileInvalid", "Office signature entry size does not match its ZIP directory."));
-                }
+                let payload = read_entry_bounded(
+                    &mut entry,
+                    declared_size,
+                    MAX_SIGNATURE_ENTRY_BYTES,
+                    "Office signature entry",
+                )?;
                 signature_payload = Some(String::from_utf8_lossy(&payload).into_owned());
             }
             continue;
@@ -610,10 +649,12 @@ pub(super) fn detect_office_input(source: &OpenedStreamFile, head: &[u8]) -> Res
             let mut entry = archive.by_index(index).map_err(|error| {
                 SignatureClientError::Invalid(format!("Could not read ODF mimetype entry: {error}"))
             })?;
-            let mut bytes = Vec::with_capacity(size as usize);
-            entry.read_to_end(&mut bytes).map_err(|error| {
-                SignatureClientError::Invalid(format!("Could not inflate ODF mimetype entry: {error}"))
-            })?;
+            let bytes = read_entry_bounded(
+                &mut entry,
+                size,
+                MAX_SIGNATURE_ENTRY_BYTES,
+                "ODF mimetype entry",
+            )?;
             odf_mimetype = Some(String::from_utf8_lossy(&bytes).trim().to_owned());
         }
     }
