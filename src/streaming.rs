@@ -3212,6 +3212,94 @@ mod tests {
     }
 
     #[test]
+    fn batch_preflight_rejects_empty_traversal_and_control_paths_before_opening_files() {
+        let bidi_path = format!("bad{}name.bin", char::from_u32(0x202e).unwrap());
+        let paths = ["", "../escape.bin", "docs/../../escape.bin", "bad\0name.bin"];
+        for path in paths.iter().copied().chain(std::iter::once(bidi_path.as_str())) {
+            let input = StreamingBatchPathInput {
+                manifest_path: path.into(),
+                source_path: PathBuf::from("this-source-must-not-be-opened"),
+                mime_type: None,
+            };
+            assert!(
+                matches!(
+                    prepare_streaming_batch(&[input], &BatchStreamingFileOptions::default()),
+                    Err(SignatureClientError::Invalid(_))
+                ),
+                "expected unsafe path to fail before source open: {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_preflight_rejects_overlong_paths_and_mime_metadata() {
+        let long_path_input = StreamingBatchPathInput {
+            manifest_path: "p".repeat(MAX_STREAMING_BATCH_PATH_CHARS + 1),
+            source_path: PathBuf::from("missing-source"),
+            mime_type: None,
+        };
+        assert!(matches!(
+            prepare_streaming_batch(&[long_path_input], &BatchStreamingFileOptions::default()),
+            Err(SignatureClientError::Invalid(_))
+        ));
+
+        let long_mime_input = StreamingBatchPathInput {
+            manifest_path: "docs/file.bin".into(),
+            source_path: PathBuf::from("missing-source"),
+            mime_type: Some("x".repeat(MAX_STREAMING_BATCH_MIME_TYPE_CHARS + 1)),
+        };
+        assert!(matches!(
+            prepare_streaming_batch(&[long_mime_input], &BatchStreamingFileOptions::default()),
+            Err(SignatureClientError::Invalid(_))
+        ));
+
+        let control_mime_input = StreamingBatchPathInput {
+            manifest_path: "docs/file.bin".into(),
+            source_path: PathBuf::from("missing-source"),
+            mime_type: Some("application/\0octet-stream".into()),
+        };
+        assert!(matches!(
+            prepare_streaming_batch(&[control_mime_input], &BatchStreamingFileOptions::default()),
+            Err(SignatureClientError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn batch_preflight_rejects_normalized_duplicate_paths() {
+        let inputs = [
+            StreamingBatchPathInput {
+                manifest_path: "docs\\one.bin".into(),
+                source_path: PathBuf::from("missing-first"),
+                mime_type: None,
+            },
+            StreamingBatchPathInput {
+                manifest_path: "docs/one.bin".into(),
+                source_path: PathBuf::from("missing-second"),
+                mime_type: None,
+            },
+        ];
+        assert!(matches!(
+            prepare_streaming_batch(&inputs, &BatchStreamingFileOptions::default()),
+            Err(SignatureClientError::Invalid(message)) if message.contains("Duplicate path")
+        ));
+    }
+
+    #[test]
+    fn batch_preflight_rejects_more_than_the_manifest_entry_limit() {
+        let inputs = (0..=MAX_STREAMING_BATCH_FILES)
+            .map(|index| StreamingBatchPathInput {
+                manifest_path: format!("docs/{index}.bin"),
+                source_path: PathBuf::from("missing-source"),
+                mime_type: None,
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            prepare_streaming_batch(&inputs, &BatchStreamingFileOptions::default()),
+            Err(SignatureClientError::Invalid(message)) if message.contains("10,000-file")
+        ));
+    }
+
+    #[test]
     fn rewritten_reader_replaces_a_range_without_buffering_the_file() {
         let path =
             std::env::temp_dir().join(format!("majik-stream-test-{}.bin", uuid::Uuid::new_v4()));
