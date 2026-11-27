@@ -1893,6 +1893,7 @@ impl SignatureClient {
         });
         let (result, _) = self.report("signBatchDetachedPathsStream", signed)?;
         drop(core_inputs);
+        drop(guarded_progress);
 
         if callback_panicked {
             return Err(SignatureClientError::Invalid(
@@ -2020,6 +2021,7 @@ impl SignatureClient {
         );
         let results = self.report("verifyMjksMapPathsStream", outcome)?;
         drop(core_inputs);
+        drop(guarded_progress);
 
         if callback_panicked {
             return Err(SignatureClientError::Invalid(
@@ -2993,6 +2995,70 @@ mod tests {
             })
         ));
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn prepares_multiple_canonical_streaming_batch_readers() {
+        let first_path = std::env::temp_dir().join(format!(
+            "majik-stream-batch-first-{}.bin",
+            uuid::Uuid::new_v4()
+        ));
+        let second_path = std::env::temp_dir().join(format!(
+            "majik-stream-batch-second-{}.bin",
+            uuid::Uuid::new_v4()
+        ));
+        let first = b"first canonical stream input".to_vec();
+        let second = b"second canonical stream input".to_vec();
+        fs::write(&first_path, &first).unwrap();
+        fs::write(&second_path, &second).unwrap();
+
+        let inputs = vec![
+            StreamingBatchPathInput {
+                manifest_path: "docs/first.bin".into(),
+                source_path: first_path.clone(),
+                mime_type: Some("application/octet-stream".into()),
+            },
+            StreamingBatchPathInput {
+                manifest_path: "docs/second.bin".into(),
+                source_path: second_path.clone(),
+                mime_type: Some("application/octet-stream".into()),
+            },
+        ];
+        let mut prepared =
+            prepare_streaming_batch(&inputs, &BatchStreamingFileOptions::default()).unwrap();
+
+        assert_eq!(prepared.sources.len(), 2);
+        assert_eq!(prepared.readers.len(), 2);
+        assert_eq!(prepared.metadata[0].0, "docs/first.bin");
+        assert_eq!(prepared.metadata[0].1, first.len() as u64);
+        assert_eq!(prepared.metadata[1].0, "docs/second.bin");
+        assert_eq!(prepared.metadata[1].1, second.len() as u64);
+
+        let mut first_read = Vec::new();
+        let mut second_read = Vec::new();
+        prepared.readers[0].read_to_end(&mut first_read).unwrap();
+        prepared.readers[1].read_to_end(&mut second_read).unwrap();
+        assert_eq!(first_read, first);
+        assert_eq!(second_read, second);
+        ensure_streaming_batch_sources_unchanged(&prepared.sources).unwrap();
+
+        let _ = fs::remove_file(first_path);
+        let _ = fs::remove_file(second_path);
+    }
+
+    #[test]
+    fn batch_chunk_size_matches_the_core_sixty_four_mib_limit() {
+        let maximum = BatchStreamingFileOptions {
+            chunk_size: 64 * 1024 * 1024,
+            ..Default::default()
+        };
+        assert!(maximum.validate().is_ok());
+
+        let too_large = BatchStreamingFileOptions {
+            chunk_size: 64 * 1024 * 1024 + 1,
+            ..Default::default()
+        };
+        assert!(too_large.validate().is_err());
     }
 
     #[cfg(unix)]
