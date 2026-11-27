@@ -38,7 +38,7 @@ use crate::signing::{
 
 const DEFAULT_CHUNK_SIZE: usize = 1024 * 1024;
 const MIN_CHUNK_SIZE: usize = 64 * 1024;
-const MAX_CHUNK_SIZE: usize = 8 * 1024 * 1024;
+const MAX_CHUNK_SIZE: usize = 128 * 1024 * 1024;
 const MAX_CONTAINER_METADATA_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_MP4_METADATA_BOXES: usize = 65_536;
 const MAX_EMBEDDED_ENVELOPE_BYTES: u64 = 16 * 1024 * 1024;
@@ -56,6 +56,19 @@ fn file_error(kind: &'static str, message: impl Into<String>) -> SignatureClient
 
 fn io_file_error(kind: &'static str, path: &Path, error: io::Error) -> SignatureClientError {
     file_error(kind, format!("{}: {error}", path.display()))
+}
+
+/// Allocate and initialize a streaming buffer without using infallible Vec allocation.
+fn allocate_stream_buffer(size: usize) -> Result<Vec<u8>> {
+    let mut buffer = Vec::new();
+    buffer.try_reserve_exact(size).map_err(|error| {
+        SignatureClientError::MemoryAllocation {
+            message: format!("Unable to allocate the {size}-byte streaming file buffer: {error}"),
+        }
+    })?;
+    // The reservation above guarantees capacity, so resize does not request another allocation.
+    buffer.resize(size, 0);
+    Ok(buffer)
 }
 
 /// Controls memory, cancellation, maximum input size, and progress for one streaming operation.
@@ -633,7 +646,7 @@ fn copy_source_segment(
         )
     })?;
     let mut remaining = length;
-    let mut buffer = vec![0u8; options.chunk_size];
+    let mut buffer = allocate_stream_buffer(options.chunk_size)?;
     let mut written = 0u64;
     while remaining > 0 {
         options.check_cancelled()?;
@@ -2659,5 +2672,18 @@ mod tests {
         reader.read_to_end(&mut result).unwrap();
         assert_eq!(result, b"prefixnewsuffix");
         let _ = fs::remove_file(path);
+    }
+}
+
+
+#[cfg(test)]
+mod adaptive_buffer_tests {
+    use super::*;
+
+    #[test]
+    fn allocates_streaming_buffers_fallibly_and_initializes_them() {
+        let buffer = allocate_stream_buffer(64 * 1024).expect("small streaming buffer");
+        assert_eq!(buffer.len(), 64 * 1024);
+        assert!(buffer.iter().all(|byte| *byte == 0));
     }
 }
