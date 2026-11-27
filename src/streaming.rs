@@ -181,7 +181,8 @@ fn prepare_streaming_batch(
         }
         if !seen.insert(input.manifest_path.as_str()) {
             return Err(SignatureClientError::Invalid(format!(
-                "Duplicate path in streaming batch: \"{}\"", input.manifest_path
+                "Duplicate path in streaming batch: \"{}\",
+                input.manifest_path
             )));
         }
 
@@ -1892,7 +1893,7 @@ impl SignatureClient {
         let (result, _) = self.report("signBatchDetachedPathsStream", signed)?;
         drop(core_inputs);
 
-        if callback_panicked {
+        if callback_panicked.get() {
             return Err(SignatureClientError::Invalid(
                 "The streaming batch progress callback panicked; no batch result was returned"
                     .into(),
@@ -1941,7 +1942,8 @@ impl SignatureClient {
                     self.emit_error(
                         "signBatchDetachedPathsStream",
                         &SignatureClientError::Invalid(format!(
-                            "{}: {}", failure.path, failure.error
+                            "{}: {}",
+                            failure.path, failure.error
                         )),
                     );
                 }
@@ -2021,7 +2023,7 @@ impl SignatureClient {
         let results = self.report("verifyMjksMapPathsStream", outcome)?;
         drop(core_inputs);
 
-        if callback_panicked {
+        if callback_panicked.get() {
             return Err(SignatureClientError::Invalid(
                 "The streaming batch progress callback panicked; no verification result was returned"
                     .into(),
