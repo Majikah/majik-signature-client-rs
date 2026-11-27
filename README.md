@@ -20,7 +20,7 @@ Rust port of the TS [@majikah/majik-signature-client](https://www.npmjs.com/pack
 
 ## Bounded-memory file streaming
 
-The `streaming` module adds native-path APIs for large files. Unlike the existing `FileInput::load()` and byte-slice methods, these operations read and write fixed-size chunks and do not materialize the source document as a `Vec<u8>` or base64 payload. The default chunk is 1 MiB; callers can choose 64 KiB–128 MiB, supply an optional maximum input size, cancel between reads, and receive byte progress. Streaming buffer allocation uses fallible reservation and reports the stable `memoryAllocation` error kind so native integrations can downgrade and retry before output publication. By default, no arbitrary total file-size ceiling is imposed on streaming operations.
+The `streaming` module adds native-path APIs for large files. Unlike the existing `FileInput::load()` and byte-slice methods, these operations read and write fixed-size chunks and do not materialize the source document as a `Vec<u8>` or base64 payload. The default chunk is 1 MiB; callers can choose 64 KiB–64 MiB, supply an optional maximum input size, cancel between reads, and receive byte progress. Streaming buffer allocation uses fallible reservation and reports the stable `memoryAllocation` error kind so native integrations can downgrade and retry before output publication. By default, no arbitrary total file-size ceiling is imposed on streaming operations.
 
 ```rust
 use std::sync::atomic::AtomicBool;
@@ -45,6 +45,57 @@ let result = client.sign_file_detached_stream(
 println!("Signed {} bytes", result.source_size_bytes);
 ```
 
+### Streaming detached batch signing and MJKSMAP verification
+
+The 1.6.0 client adds path-backed batch operations that reuse the same format-aware
+canonicalization plans as the single-file streaming APIs. Each input pairs a
+relative `manifest_path` with a native `source_path`; the client opens the
+source, constructs a canonical `RewrittenFileReader`, and passes those readers
+to the core 1.6.0 streaming batch operations.
+
+```rust
+use majik_signature_client::{
+    BatchSignOptions, BatchStreamingFileOptions, OpContext, SignatureClient,
+    StreamingBatchPathInput,
+};
+
+let inputs = vec![
+    StreamingBatchPathInput {
+        manifest_path: "contracts/contract.pdf".into(),
+        source_path: "./files/contract.pdf".into(),
+        mime_type: Some("application/pdf".into()),
+    },
+    StreamingBatchPathInput {
+        manifest_path: "media/demo.mp4".into(),
+        source_path: "./files/demo.mp4".into(),
+        mime_type: Some("video/mp4".into()),
+    },
+];
+
+let mut streaming = BatchStreamingFileOptions::default();
+let result = client.sign_batch_detached_paths_stream(
+    &inputs,
+    &BatchSignOptions::default(),
+    &OpContext::default(),
+    &mut streaming,
+)?;
+```
+
+The result preserves the core `BatchSignResult` modes: one MJKSMAP manifest or
+separate MJKSIG sidecars. Source documents are not returned or materialized.
+Use `write_atomic_bytes()` to publish the small manifest or sidecar bytes when
+a filesystem destination is needed.
+
+Use `verify_mjks_map_paths_stream()` with a `VerifyTarget` containing a trusted
+key, contact, or address. Streaming verification deliberately requires trusted
+public keys; use the existing buffered `verify_mjks_map()` for self-reported
+envelope-key verification. Both streaming operations preserve path-first
+tamper detection and content-hash relocation behavior, support per-file
+progress, maximum input sizes, and cancellation.
+
+The supported chunk override range is 64 KiB–64 MiB, matching the core 1.6.0
+contract. The 1 MiB default and 8 MiB automatic core threshold are unchanged.
+
 ### Streaming format support
 
 | Operation | Supported content | Notes |
@@ -57,7 +108,7 @@ println!("Signed {} bytes", result.source_size_bytes);
 | Embedded sign / verify | OOXML/ODF Office files | Rebuilds the deterministic canonical ZIP from disk-staged entries and appends/replaces the final majik-signature.json entry. The full uncompressed archive is never materialised in memory. |
 | Embedded sign / verify | Matroska/WebM | Uses the existing universal trailer representation; the EBML/media payload is streamed unchanged. |
 
-The default chunk size is 1 MiB (configurable from 64 KiB to 8 MiB). The default streaming API has no arbitrary total input-size cap for ordinary files; callers can set max_bytes. Format metadata is separately bounded (32 MiB for container metadata and 16 MiB for embedded envelopes). Office ZIP processing retains the core 512 MiB total uncompressed-content ceiling, adds a 32 MiB central-directory safety limit, and caps the embedded signature entry at 8 MiB. Office staging and archive writes remain bounded and observe cancellation; progress callbacks report the canonical content hashing/signing passes rather than a separate ZIP decompression progress stream. These are format-specific safety bounds, not arbitrary caps on standalone large media payloads.
+The default chunk size is 1 MiB (configurable from 64 KiB to 64 MiB). The default streaming API has no arbitrary total input-size cap for ordinary files; callers can set max_bytes. Format metadata is separately bounded (32 MiB for container metadata and 16 MiB for embedded envelopes). Office ZIP processing retains the core 512 MiB total uncompressed-content ceiling, adds a 32 MiB central-directory safety limit, and caps the embedded signature entry at 8 MiB. Office staging and archive writes remain bounded and observe cancellation; progress callbacks report the canonical content hashing/signing passes rather than a separate ZIP decompression progress stream. These are format-specific safety bounds, not arbitrary caps on standalone large media payloads.
 
 ### Path-backed revision signing
 
