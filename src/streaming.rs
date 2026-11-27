@@ -10,6 +10,7 @@
 mod media;
 mod office;
 
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
@@ -945,7 +946,7 @@ where
     };
     let mut callback_panicked = false;
     let mut guarded_progress = |update| {
-        if callback_panicked {
+        if callback_panicked.get() {
             return;
         }
         if let Some(callback) = progress_callback.as_deref_mut() {
@@ -1868,11 +1869,11 @@ impl SignatureClient {
         let max_bytes_per_file = streaming.max_bytes_per_file;
         let cancellation = streaming.cancellation;
         let progress_callback = streaming.on_progress.as_deref_mut();
-        let mut callback_panicked = false;
+        let callback_panicked = Cell::new(false);
         let mut guarded_progress = |progress: StreamingBatchProgress| {
             if let Some(callback) = progress_callback.as_deref_mut() {
                 if catch_unwind(AssertUnwindSafe(|| callback(progress))).is_err() {
-                    callback_panicked = true;
+                    callback_panicked.set(true);
                 }
             }
         };
@@ -1893,7 +1894,6 @@ impl SignatureClient {
         });
         let (result, _) = self.report("signBatchDetachedPathsStream", signed)?;
         drop(core_inputs);
-        drop(guarded_progress);
 
         if callback_panicked {
             return Err(SignatureClientError::Invalid(
@@ -1997,11 +1997,11 @@ impl SignatureClient {
         let max_bytes_per_file = streaming.max_bytes_per_file;
         let cancellation = streaming.cancellation;
         let progress_callback = streaming.on_progress.as_deref_mut();
-        let mut callback_panicked = false;
+        let callback_panicked = Cell::new(false);
         let mut guarded_progress = |progress: StreamingBatchProgress| {
             if let Some(callback) = progress_callback.as_deref_mut() {
                 if catch_unwind(AssertUnwindSafe(|| callback(progress))).is_err() {
-                    callback_panicked = true;
+                    callback_panicked.set(true);
                 }
             }
         };
