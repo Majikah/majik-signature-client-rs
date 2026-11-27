@@ -21,6 +21,7 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use jiff::Timestamp;
+pub use majik_signature::StreamingBatchProgress;
 use majik_signature::{
     bytes_to_base64, parse_embedded_envelope, serialize_embedded_envelope, BatchSignOptions,
     BatchSignResult, BatchStreamingOptions as CoreBatchStreamingOptions, BatchVerifyOptions,
@@ -28,7 +29,6 @@ use majik_signature::{
     StreamingBatchFileInput, StreamingBatchVerifyInput, StreamingHashOptions,
     StreamingHashProgress,
 };
-pub use majik_signature::StreamingBatchProgress;
 use sha2::{Digest, Sha256};
 
 use crate::client::SignatureClient;
@@ -138,9 +138,10 @@ impl BatchStreamingFileOptions<'_> {
     }
 
     fn check_cancelled(&self) -> Result<()> {
-        if self.cancellation.is_some_and(|flag| {
-            flag.load(std::sync::atomic::Ordering::Acquire)
-        }) {
+        if self
+            .cancellation
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
             return Err(SignatureClientError::Invalid(
                 "Streaming operation was cancelled".into(),
             ));
@@ -216,9 +217,7 @@ fn prepare_streaming_batch(
     })
 }
 
-fn ensure_streaming_batch_sources_unchanged(
-    sources: &[OpenedStreamFile],
-) -> Result<()> {
+fn ensure_streaming_batch_sources_unchanged(sources: &[OpenedStreamFile]) -> Result<()> {
     for source in sources {
         source.ensure_unchanged()?;
     }
@@ -979,7 +978,7 @@ where
                     .into(),
             )),
         };
-    if callback_panicked {
+    if callback_panicked.get() {
         return Err(SignatureClientError::Invalid(
             "The streaming progress callback panicked; the operation was cancelled safely".into(),
         ));
@@ -1854,9 +1853,7 @@ impl SignatureClient {
         } = &mut prepared;
 
         let mut core_inputs = Vec::with_capacity(inputs.len());
-        for ((path, total_bytes, mime_type), reader) in
-            metadata.iter().zip(readers.iter_mut())
-        {
+        for ((path, total_bytes, mime_type), reader) in metadata.iter().zip(readers.iter_mut()) {
             core_inputs.push(StreamingBatchFileInput {
                 path: path.clone(),
                 reader,
@@ -1920,12 +1917,16 @@ impl SignatureClient {
                     self.emit_error(
                         "signBatchDetachedPathsStream",
                         &SignatureClientError::Invalid(format!(
-                            "{}: {}", failure.path, failure.error
+                            "{}: {}",
+                            failure.path, failure.error
                         )),
                     );
                 }
             }
-            BatchSignResult::Separate { signatures, failures } => {
+            BatchSignResult::Separate {
+                signatures,
+                failures,
+            } => {
                 for separate in signatures {
                     let envelope = MajikSignatureEnvelope::from_mjksig(&separate.blob)?;
                     let signature_json = envelope.signatures().last().ok_or_else(|| {
@@ -1963,12 +1964,12 @@ impl SignatureClient {
         streaming: &mut BatchStreamingFileOptions<'_>,
     ) -> Result<crate::mjks::MapVerifyResult> {
         let map = map_input.resolve()?;
-        let public_keys = self
-            .resolve_signer_public_keys(target)?
-            .ok_or_else(|| SignatureClientError::Invalid(
+        let public_keys = self.resolve_signer_public_keys(target)?.ok_or_else(|| {
+            SignatureClientError::Invalid(
                 "Streaming MJKSMAP verification requires a trusted signer key, contact, or address."
                     .into(),
-            ))?;
+            )
+        })?;
 
         let mut prepared = prepare_streaming_batch(inputs, streaming)?;
         let PreparedStreamingBatch {
@@ -1978,9 +1979,7 @@ impl SignatureClient {
         } = &mut prepared;
 
         let mut core_inputs = Vec::with_capacity(inputs.len());
-        for ((path, total_bytes, _mime_type), reader) in
-            metadata.iter().zip(readers.iter_mut())
-        {
+        for ((path, total_bytes, _mime_type), reader) in metadata.iter().zip(readers.iter_mut()) {
             core_inputs.push(StreamingBatchVerifyInput {
                 path: path.clone(),
                 reader,
@@ -2021,7 +2020,6 @@ impl SignatureClient {
         );
         let results = self.report("verifyMjksMapPathsStream", outcome)?;
         drop(core_inputs);
-        drop(guarded_progress);
 
         if callback_panicked {
             return Err(SignatureClientError::Invalid(
@@ -2032,8 +2030,10 @@ impl SignatureClient {
         ensure_streaming_batch_sources_unchanged(sources)?;
 
         let missing_from_batch = if require_all_present {
-            let mut covered: HashSet<String> =
-                inputs.iter().map(|file| file.manifest_path.clone()).collect();
+            let mut covered: HashSet<String> = inputs
+                .iter()
+                .map(|file| file.manifest_path.clone())
+                .collect();
             for result in &results {
                 if let Some(original) = result.relocated_from.as_ref() {
                     covered.insert(original.clone());
