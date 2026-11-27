@@ -4,7 +4,7 @@
 
 Designed to be used natively within the Majikah ecosystem, it inherits all core `MajikKey` account management—such as creation, lock/unlock states, and active-account tracking—while introducing domain-specific functionality for file signing, contact management, and encrypted reusable stamps.
 
-Rust port of the TS [@majikah/majik-signature-client](https://www.npmjs.com/package/@majikah/majik-signature), composed on `majik-key-client`: `SignatureClient` owns a
+Rust port of the TS [@majikah/majik-signature-client](https://www.npmjs.com/package/@majikah/majik-signature-client), composed on `majik-key-client`: `SignatureClient` owns a
 `KeyClient<SigHooks>` (`keys()` / `keys_mut()`) plus contacts, stamps, logs, preferences and signing.
 
 ## Core Capabilities
@@ -132,6 +132,27 @@ Streaming operations record signature/history metadata but intentionally do not 
 | `stamps`, `stamps_api` | encrypted stamps (`MajikFile` envelopes), repositories (`majik_signature_stamps`), manager, client API |
 | `backup` | `STMP` / `MJKC` / `MJKA` backups (magic header + `majik-cjson`), read / restore / selective restore |
 | `logs`, `prefs`, `events`, `hooks`, `shared`, `bus` | history + activity logs, user app preferences, one merged event stream, own-account<->contact sync |
+
+
+## Client-side batch input bounds
+
+The 1.6.0 native batch adapter performs a complete metadata preflight before opening source files:
+
+- A batch contains 1–10,000 files, matching the core MJKSMAP entry limit.
+- Manifest paths are limited to 4,096 UTF-16 code units. Control/bidi characters, traversal segments, and duplicate paths after core-compatible normalization are rejected.
+- Optional MIME overrides are limited to 1,024 UTF-16 code units and reject control characters.
+- The chunk override remains 64 KiB–64 MiB (1 MiB default). `max_bytes_per_file` is an optional canonical-input ceiling applied independently to each file; `None` does not impose an arbitrary total file-size cap.
+- Cancellation is checked during preparation and streaming. Progress callbacks are isolated from panics so a callback cannot unwind through the client; a panicked callback causes the operation to return an error.
+
+The core library remains responsible for MJKSMAP/MJKSIG envelope parsing, canonical signature validation, stream hashing, and cryptographic verification. Adapter tests focus on native-path preparation and caller-controlled metadata, not duplicate cryptographic parser test vectors.
+
+## Security and trust boundaries
+
+Verification with `VerifyTarget` requires a trusted public key resolved from a key, contact, or address. A successful signature check proves consistency with that public key; it does not independently prove the real-world identity or authorization of its owner. Establish key trust out of band and perform application authorization separately.
+
+Do not treat arbitrary signed files as safe to render, extract, or execute. Apply host-application file-type, size, and authorization policies. Keep private keys and recovery phrases secret, do not log source contents or key material, and use storage adapters appropriate to the host environment.
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting guidance and [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## License
 

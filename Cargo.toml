@@ -3,11 +3,10 @@ name = "majik-signature-client"
 version = "1.6.0"
 edition = "2021"
 rust-version = "1.92"
-description = "Signature client for Majikah apps: composes majik-key-client with contacts, stamps, logs and signing."
+description = "High-level Rust client for Majik Signature account, contact, file-signing, backup, and native streaming workflows."
 license = "Apache-2.0"
 
 [dependencies]
-# Switch the two path dependencies to crates.io versions once they are published.
 majik-key-client = "1.0.0"
 majik-contact = { version = "=0.2.0", default-features = false }
 flate2 = "1.1.11"
