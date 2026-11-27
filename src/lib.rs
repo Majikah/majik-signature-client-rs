@@ -38,7 +38,8 @@ pub use shared::{SigShared, MAX_ACTIVITY_LOGS};
 pub use signing::{OpContext, SigInput, SignResult, SignerRef, VerifyResult, VerifyTarget};
 pub use stamps::{MajikSignatureStamp, StampAssetKind, StampJson, StampMeta};
 pub use streaming::{
-    write_atomic_bytes, write_atomic_with, OpenedStreamFile, StreamingDetachedSignResult,
+    write_atomic_bytes, write_atomic_with, BatchStreamingFileOptions, OpenedStreamFile,
+    StreamingBatchPathInput, StreamingBatchProgress, StreamingDetachedSignResult,
     StreamingEmbeddedSignResult, StreamingFileOptions, StreamingOutput,
 };
 
