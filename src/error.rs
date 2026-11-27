@@ -69,12 +69,16 @@ impl SignatureClientError {
 
 impl From<MajikSignatureError> for SignatureClientError {
     fn from(error: MajikSignatureError) -> Self {
-        let allocation_failed = error
-            .source()
-            .is_some_and(|source| source.downcast_ref::<std::collections::TryReserveError>().is_some());
+        let allocation_failed = error.source().is_some_and(|source| {
+            source
+                .downcast_ref::<std::collections::TryReserveError>()
+                .is_some()
+        });
 
         if allocation_failed {
-            Self::MemoryAllocation { message: error.to_string() }
+            Self::MemoryAllocation {
+                message: error.to_string(),
+            }
         } else {
             Self::Signature(error)
         }

@@ -61,11 +61,11 @@ fn io_file_error(kind: &'static str, path: &Path, error: io::Error) -> Signature
 /// Allocate and initialize a streaming buffer without using infallible Vec allocation.
 fn allocate_stream_buffer(size: usize) -> Result<Vec<u8>> {
     let mut buffer = Vec::new();
-    buffer.try_reserve_exact(size).map_err(|error| {
-        SignatureClientError::MemoryAllocation {
+    buffer
+        .try_reserve_exact(size)
+        .map_err(|error| SignatureClientError::MemoryAllocation {
             message: format!("Unable to allocate the {size}-byte streaming file buffer: {error}"),
-        }
-    })?;
+        })?;
     // The reservation above guarantees capacity, so resize does not request another allocation.
     buffer.resize(size, 0);
     Ok(buffer)
@@ -2674,7 +2674,6 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 }
-
 
 #[cfg(test)]
 mod adaptive_buffer_tests {
