@@ -181,7 +181,7 @@ fn prepare_streaming_batch(
         }
         if !seen.insert(input.manifest_path.as_str()) {
             return Err(SignatureClientError::Invalid(format!(
-                "Duplicate path in streaming batch: \"{}\",
+                "Duplicate path in streaming batch: \"{}\"",
                 input.manifest_path
             )));
         }
@@ -224,7 +224,6 @@ fn ensure_streaming_batch_sources_unchanged(sources: &[OpenedStreamFile]) -> Res
     }
     Ok(())
 }
-
 
 impl StreamingFileOptions<'_> {
     fn validate(&self) -> Result<()> {
@@ -946,7 +945,7 @@ where
     };
     let mut callback_panicked = false;
     let mut guarded_progress = |update| {
-        if callback_panicked.get() {
+        if callback_panicked {
             return;
         }
         if let Some(callback) = progress_callback.as_deref_mut() {
@@ -979,7 +978,7 @@ where
                     .into(),
             )),
         };
-    if callback_panicked.get() {
+    if callback_panicked {
         return Err(SignatureClientError::Invalid(
             "The streaming progress callback panicked; the operation was cancelled safely".into(),
         ));
