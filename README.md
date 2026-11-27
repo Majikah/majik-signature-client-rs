@@ -20,7 +20,7 @@ Rust port of the TS [@majikah/majik-signature-client](https://www.npmjs.com/pack
 
 ## Bounded-memory file streaming
 
-The `streaming` module adds native-path APIs for large files. Unlike the existing `FileInput::load()` and byte-slice methods, these operations read and write fixed-size chunks and do not materialize the source document as a `Vec<u8>` or base64 payload. The default chunk is 1 MiB; callers can choose 64 KiB–8 MiB, supply an optional maximum input size, cancel between reads, and receive byte progress. By default, no arbitrary total file-size ceiling is imposed on streaming operations.
+The `streaming` module adds native-path APIs for large files. Unlike the existing `FileInput::load()` and byte-slice methods, these operations read and write fixed-size chunks and do not materialize the source document as a `Vec<u8>` or base64 payload. The default chunk is 1 MiB; callers can choose 64 KiB–128 MiB, supply an optional maximum input size, cancel between reads, and receive byte progress. Streaming buffer allocation uses fallible reservation and reports the stable `memoryAllocation` error kind so native integrations can downgrade and retry before output publication. By default, no arbitrary total file-size ceiling is imposed on streaming operations.
 
 ```rust
 use std::sync::atomic::AtomicBool;

@@ -1,5 +1,7 @@
 //! Error type for the signature client.
 
+use std::error::Error as StdError;
+
 use crate::contacts::ContactManagerError;
 use majik_cjson::MajikCjsonError;
 use majik_file::MajikFileError;
@@ -14,7 +16,10 @@ pub enum SignatureClientError {
     #[error(transparent)]
     Contacts(#[from] ContactManagerError),
     #[error(transparent)]
-    Signature(#[from] MajikSignatureError),
+    Signature(MajikSignatureError),
+    /// A bounded streaming buffer could not be reserved; the Tauri layer may retry smaller.
+    #[error("Memory allocation failed: {message}")]
+    MemoryAllocation { message: String },
     #[error(transparent)]
     File(#[from] MajikFileError),
     #[error(transparent)]
@@ -48,6 +53,7 @@ impl SignatureClientError {
             Self::Key(e) => e.kind(),
             Self::Contacts(e) => e.kind(),
             Self::Signature(_) => "signature",
+            Self::MemoryAllocation { .. } => "memoryAllocation",
             Self::File(_) => "file",
             Self::Cjson(_) => "cjson",
             Self::FileInput { kind, .. } => kind,
@@ -57,6 +63,24 @@ impl SignatureClientError {
             Self::NoActiveAccount => "noActiveAccount",
             Self::OwnAccountNotFound(_) => "ownAccountNotFound",
             Self::Poisoned => "poisoned",
+        }
+    }
+}
+
+impl From<MajikSignatureError> for SignatureClientError {
+    fn from(error: MajikSignatureError) -> Self {
+        let allocation_failed = error.source().is_some_and(|source| {
+            source
+                .downcast_ref::<std::collections::TryReserveError>()
+                .is_some()
+        });
+
+        if allocation_failed {
+            Self::MemoryAllocation {
+                message: error.to_string(),
+            }
+        } else {
+            Self::Signature(error)
         }
     }
 }
