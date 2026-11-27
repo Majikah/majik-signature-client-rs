@@ -24,8 +24,8 @@ use majik_signature::{
     bytes_to_base64, parse_embedded_envelope, serialize_embedded_envelope, BatchSignOptions,
     BatchSignResult, BatchStreamingOptions as CoreBatchStreamingOptions, BatchVerifyOptions,
     EnvelopeInput, FileVersion, MajikSignature, MajikSignatureEnvelope, SignOptions,
-    StreamingBatchFileInput, StreamingBatchProgress, StreamingBatchVerifyInput,
-    StreamingHashOptions, StreamingHashProgress,
+    StreamingBatchFileInput, StreamingBatchVerifyInput, StreamingHashOptions,
+    StreamingHashProgress,
 };
 pub use majik_signature::StreamingBatchProgress;
 use sha2::{Digest, Sha256};
