@@ -1865,7 +1865,7 @@ impl SignatureClient {
         let chunk_size = streaming.chunk_size;
         let max_bytes_per_file = streaming.max_bytes_per_file;
         let cancellation = streaming.cancellation;
-        let progress_callback = streaming.on_progress.as_deref_mut();
+        let mut progress_callback = streaming.on_progress.as_deref_mut();
         let callback_panicked = Cell::new(false);
         let mut guarded_progress = |progress: StreamingBatchProgress| {
             if let Some(callback) = progress_callback.as_deref_mut() {
@@ -1996,7 +1996,7 @@ impl SignatureClient {
         let chunk_size = streaming.chunk_size;
         let max_bytes_per_file = streaming.max_bytes_per_file;
         let cancellation = streaming.cancellation;
-        let progress_callback = streaming.on_progress.as_deref_mut();
+        let mut progress_callback = streaming.on_progress.as_deref_mut();
         let callback_panicked = Cell::new(false);
         let mut guarded_progress = |progress: StreamingBatchProgress| {
             if let Some(callback) = progress_callback.as_deref_mut() {
@@ -2018,7 +2018,8 @@ impl SignatureClient {
             &public_keys,
             Some(&verify_options),
             core_streaming,
-        );
+        )
+        .map_err(Into::into);
         let results = self.report("verifyMjksMapPathsStream", outcome)?;
         drop(core_inputs);
 
