@@ -38,7 +38,7 @@ use crate::signing::{
 
 const DEFAULT_CHUNK_SIZE: usize = 1024 * 1024;
 const MIN_CHUNK_SIZE: usize = 64 * 1024;
-const MAX_CHUNK_SIZE: usize = 128 * 1024 * 1024;
+const MAX_CHUNK_SIZE: usize = 256 * 1024 * 1024;
 const MAX_CONTAINER_METADATA_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_MP4_METADATA_BOXES: usize = 65_536;
 const MAX_EMBEDDED_ENVELOPE_BYTES: u64 = 16 * 1024 * 1024;
