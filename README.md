@@ -1,15 +1,12 @@
 # Majik Signature Client
 
-**Majik Signature Client** is a high-level Rust wrapper for `MajikSignature`, built directly on top of `MajikKeyClient`.
+**Majik Signature Client** is the high-level Rust application client for `MajikSignature`. It composes `majik-key-client` through a `KeyClient<SigHooks>` owned by `SignatureClient`; it does not inherit from or extend `MajikKeyClient`.
 
-Designed to be used natively within the Majikah ecosystem, it inherits all core `MajikKey` account management—such as creation, lock/unlock states, and active-account tracking—while introducing domain-specific functionality for file signing, contact management, and encrypted reusable stamps.
-
-Rust port of the TS [@majikah/majik-signature-client](https://www.npmjs.com/package/@majikah/majik-signature-client), composed on `majik-key-client`: `SignatureClient` owns a
-`KeyClient<SigHooks>` (`keys()` / `keys_mut()`) plus contacts, stamps, logs, preferences and signing.
+The client combines key-account lifecycle access (`keys()` / `keys_mut()`) with the signature-specific contact directory, stamps, logs, preferences, file operations, and native streaming adapters. It is the Rust counterpart of the TypeScript [@majikah/majik-signature-client](https://www.npmjs.com/package/@majikah/majik-signature-client).
 
 ## Core Capabilities
 
-* **Integrated Key & Account Management**: Extends `MajikKeyClient` to seamlessly handle account lifecycles and cryptographic unlocking.
+* **Integrated Key & Account Management**: Exposes the composed `KeyClient<SigHooks>` for account lifecycle and cryptographic unlocking operations.
 * **Contact & Group Directory**: Utilizes `MajikContactManager` for full contact CRUD operations, including system/user groups, favorites, and blocked lists.
 * **Post-Quantum Signing & Verification**: Provides file signing, detached signing, batch operations, and verification, with public-key resolution from the internal contact directory or active keystore.
 * **Multi-sig & Envelope Sealing**: Built-in support for restricted allowlists (`expectedSigners`), multi-sig pending states, and cryptographic sealing to prevent further modifications to a file.
