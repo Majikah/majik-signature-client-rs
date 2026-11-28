@@ -10,6 +10,8 @@
 mod media;
 mod office;
 
+use std::cell::Cell;
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -19,9 +21,12 @@ use std::sync::Arc;
 use std::time::SystemTime;
 
 use jiff::Timestamp;
+pub use majik_signature::StreamingBatchProgress;
 use majik_signature::{
-    bytes_to_base64, parse_embedded_envelope, serialize_embedded_envelope, EnvelopeInput,
-    FileVersion, MajikSignature, MajikSignatureEnvelope, SignOptions, StreamingHashOptions,
+    bytes_to_base64, parse_embedded_envelope, serialize_embedded_envelope, BatchSignOptions,
+    BatchSignResult, BatchStreamingOptions as CoreBatchStreamingOptions, BatchVerifyOptions,
+    EnvelopeInput, FileVersion, MajikSignature, MajikSignatureEnvelope, SignOptions,
+    StreamingBatchFileInput, StreamingBatchVerifyInput, StreamingHashOptions,
     StreamingHashProgress,
 };
 use sha2::{Digest, Sha256};
@@ -36,17 +41,33 @@ use crate::signing::{
     invalid_result, OpContext, OpNote, SignEventPayload, SignResult, VerifyResult, VerifyTarget,
 };
 
+/// Default bounded-memory read/write chunk size (1 MiB).
 const DEFAULT_CHUNK_SIZE: usize = 1024 * 1024;
+/// Smallest configurable streaming chunk size (64 KiB).
 const MIN_CHUNK_SIZE: usize = 64 * 1024;
-const MAX_CHUNK_SIZE: usize = 256 * 1024 * 1024;
+/// Largest configurable streaming chunk size (64 MiB), matching core 1.6.0.
+const MAX_CHUNK_SIZE: usize = 64 * 1024 * 1024;
+/// Maximum container metadata retained in memory during format-aware rewriting.
 const MAX_CONTAINER_METADATA_BYTES: u64 = 32 * 1024 * 1024;
+/// Maximum number of ISO-BMFF metadata boxes inspected in one input.
 const MAX_MP4_METADATA_BOXES: usize = 65_536;
+/// Maximum detached or embedded signature-envelope metadata size.
 const MAX_EMBEDDED_ENVELOPE_BYTES: u64 = 16 * 1024 * 1024;
+/// Maximum native-path batch entries, matching the core MJKSMAP entry limit.
+const MAX_STREAMING_BATCH_FILES: usize = 10_000;
+/// Maximum manifest path length, measured in UTF-16 code units like the core model.
+const MAX_STREAMING_BATCH_PATH_CHARS: usize = 4_096;
+/// Maximum MIME metadata length, measured in UTF-16 code units like the core model.
+const MAX_STREAMING_BATCH_MIME_TYPE_CHARS: usize = 1_024;
 
+/// PDF signature trailer marker used by the canonicalization handler.
 const PDF_SIGNATURE_MARKER: &[u8] = b"\n%%MajikSig%%\n";
+/// Magic bytes identifying the universal detached-signature trailer.
 const UNIVERSAL_TRAILER_MAGIC: [u8; 8] = *b"MAJIKSIG";
+/// ISO-BMFF user-data box type used for the embedded Majik signature.
 const MP4_SIGNATURE_BOX: [u8; 4] = *b"majk";
 
+/// Construct a typed file-input error with a stable machine-readable kind.
 fn file_error(kind: &'static str, message: impl Into<String>) -> SignatureClientError {
     SignatureClientError::FileInput {
         kind,
@@ -54,6 +75,7 @@ fn file_error(kind: &'static str, message: impl Into<String>) -> SignatureClient
     }
 }
 
+/// Attach a native path to an I/O failure while preserving its stable error kind.
 fn io_file_error(kind: &'static str, path: &Path, error: io::Error) -> SignatureClientError {
     file_error(kind, format!("{}: {error}", path.display()))
 }
@@ -75,9 +97,13 @@ fn allocate_stream_buffer(size: usize) -> Result<Vec<u8>> {
 ///
 /// The default uses a 1 MiB buffer and does not impose an arbitrary total file-size limit.
 pub struct StreamingFileOptions<'a> {
+    /// Read/write chunk size in the inclusive range 64 KiB–64 MiB.
     pub chunk_size: usize,
+    /// Optional maximum canonical input size; `None` leaves total size uncapped.
     pub max_bytes: Option<u64>,
+    /// Optional cancellation flag checked between streaming reads.
     pub cancellation: Option<&'a AtomicBool>,
+    /// Optional callback invoked after a non-empty chunk is incorporated.
     pub on_progress: Option<&'a mut dyn FnMut(StreamingHashProgress)>,
 }
 
@@ -90,6 +116,202 @@ impl<'a> Default for StreamingFileOptions<'a> {
             on_progress: None,
         }
     }
+}
+
+/// A native source file paired with its path inside the MJKSMAP batch.
+#[derive(Debug, Clone)]
+pub struct StreamingBatchPathInput {
+    /// Relative, normalized POSIX path stored in the manifest.
+    pub manifest_path: String,
+    /// Native file path read through the existing format-aware streaming handlers.
+    pub source_path: PathBuf,
+    /// Optional MIME override; otherwise inferred from the source filename.
+    pub mime_type: Option<String>,
+}
+
+/// Chunking, size, cancellation, and per-file progress controls for native batch operations.
+pub struct BatchStreamingFileOptions<'a> {
+    /// Read/write chunk size in the inclusive range 64 KiB–64 MiB.
+    pub chunk_size: usize,
+    /// Optional input-size ceiling checked against the native source and canonical stream per file.
+    pub max_bytes_per_file: Option<u64>,
+    /// Optional cancellation flag checked between file preparation and reads.
+    pub cancellation: Option<&'a AtomicBool>,
+    /// Optional callback for per-file progress across the batch.
+    pub on_progress: Option<&'a mut dyn FnMut(StreamingBatchProgress)>,
+}
+
+impl Default for BatchStreamingFileOptions<'_> {
+    fn default() -> Self {
+        Self {
+            chunk_size: DEFAULT_CHUNK_SIZE,
+            max_bytes_per_file: None,
+            cancellation: None,
+            on_progress: None,
+        }
+    }
+}
+
+impl BatchStreamingFileOptions<'_> {
+    fn validate(&self) -> Result<()> {
+        if !(MIN_CHUNK_SIZE..=MAX_CHUNK_SIZE).contains(&self.chunk_size) {
+            return Err(SignatureClientError::Invalid(format!(
+                "Streaming chunk size must be between {MIN_CHUNK_SIZE} and {MAX_CHUNK_SIZE} bytes"
+            )));
+        }
+        Ok(())
+    }
+
+    fn check_cancelled(&self) -> Result<()> {
+        if self
+            .cancellation
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return Err(SignatureClientError::Invalid(
+                "Streaming operation was cancelled".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+struct PreparedStreamingBatch {
+    sources: Vec<OpenedStreamFile>,
+    readers: Vec<RewrittenFileReader>,
+    metadata: Vec<(String, u64, Option<String>)>,
+}
+
+/// Validate a logical manifest path before opening any native source.
+fn normalize_and_validate_batch_path(path: &str) -> Result<String> {
+    let invalid = |message: &str| SignatureClientError::Invalid(message.to_owned());
+    if path.trim().is_empty() {
+        return Err(invalid(
+            "Every streaming batch file must have a non-empty manifest path",
+        ));
+    }
+    if path.encode_utf16().count() > MAX_STREAMING_BATCH_PATH_CHARS
+        || path.chars().any(|character| {
+            matches!(
+                character,
+                '\u{0000}'..='\u{001f}'
+                    | '\u{007f}'
+                    | '\u{202a}'..='\u{202e}'
+                    | '\u{2066}'..='\u{2069}'
+            )
+        })
+    {
+        return Err(invalid("Streaming batch manifest path exceeds the supported length or contains unsafe control characters"));
+    }
+
+    // Mirror the core map's alias normalization before checking traversal.
+    let mut normalized = path.replace('\\', "/").trim().to_owned();
+    if normalized.as_bytes().get(1) == Some(&b':')
+        && normalized
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
+    {
+        normalized.drain(..2);
+    }
+    normalized = normalized.trim_start_matches('/').to_owned();
+    if normalized.is_empty() || normalized.split('/').any(|segment| segment == "..") {
+        return Err(invalid(
+            "Streaming batch manifest path must resolve to a non-traversing relative path",
+        ));
+    }
+    Ok(normalized)
+}
+
+/// Bound caller-controlled MIME metadata before format detection or manifest creation.
+fn validate_batch_mime_type(mime_type: Option<&str>) -> Result<()> {
+    if let Some(value) = mime_type {
+        if value.encode_utf16().count() > MAX_STREAMING_BATCH_MIME_TYPE_CHARS
+            || value
+                .chars()
+                .any(|character| matches!(character, '\u{0000}'..='\u{001f}' | '\u{007f}'))
+        {
+            return Err(SignatureClientError::Invalid(
+                "Streaming batch MIME metadata exceeds the supported length or contains control characters".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Validate all caller-controlled batch metadata before opening source files.
+fn prepare_streaming_batch(
+    inputs: &[StreamingBatchPathInput],
+    options: &BatchStreamingFileOptions<'_>,
+) -> Result<PreparedStreamingBatch> {
+    options.validate()?;
+    options.check_cancelled()?;
+    if inputs.is_empty() {
+        return Err(SignatureClientError::Invalid(
+            "Streaming batch must contain at least one file".into(),
+        ));
+    }
+    if inputs.len() > MAX_STREAMING_BATCH_FILES {
+        return Err(SignatureClientError::Invalid(format!(
+            "Streaming batch exceeds the {MAX_STREAMING_BATCH_FILES}-file client limit"
+        )));
+    }
+
+    // Complete the bounded metadata preflight first. A malformed late entry
+    // cannot cause earlier attacker-selected paths to be opened.
+    let mut seen = HashSet::with_capacity(inputs.len());
+    for input in inputs {
+        let normalized = normalize_and_validate_batch_path(&input.manifest_path)?;
+        if !seen.insert(normalized.clone()) {
+            return Err(SignatureClientError::Invalid(format!(
+                "Duplicate path in streaming batch after normalization: \"{normalized}\""
+            )));
+        }
+        validate_batch_mime_type(input.mime_type.as_deref())?;
+    }
+
+    let mut sources = Vec::with_capacity(inputs.len());
+    let mut plans = Vec::with_capacity(inputs.len());
+    let mut metadata = Vec::with_capacity(inputs.len());
+
+    for input in inputs {
+        options.check_cancelled()?;
+        let source = OpenedStreamFile::open(&input.source_path, input.mime_type.as_deref())?;
+        if let Some(max) = options.max_bytes_per_file {
+            if source.length() > max {
+                return Err(file_error(
+                    "fileTooLarge",
+                    format!("Input exceeds the configured streaming limit of {max} bytes"),
+                ));
+            }
+        }
+        let plan = build_rewrite_plan(&source, options.cancellation)?;
+        let canonical_len = plan.canonical_len()?;
+        metadata.push((
+            input.manifest_path.clone(),
+            canonical_len,
+            Some(plan.mime_type.clone()),
+        ));
+        sources.push(source);
+        plans.push(plan);
+    }
+
+    let mut readers = Vec::with_capacity(inputs.len());
+    for (source, plan) in sources.iter().zip(plans.iter()) {
+        readers.push(RewrittenFileReader::new(source.try_clone_file()?, plan)?);
+    }
+
+    Ok(PreparedStreamingBatch {
+        sources,
+        readers,
+        metadata,
+    })
+}
+/// Re-check open batch sources after processing to detect ordinary concurrent edits.
+fn ensure_streaming_batch_sources_unchanged(sources: &[OpenedStreamFile]) -> Result<()> {
+    for source in sources {
+        source.ensure_unchanged()?;
+    }
+    Ok(())
 }
 
 impl StreamingFileOptions<'_> {
@@ -119,29 +341,43 @@ impl StreamingFileOptions<'_> {
 /// Metadata for a streamed output. Large source bytes are never included in this value.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StreamingOutput {
+    /// Destination path published by the atomic writer.
     pub path: String,
+    /// Number of bytes written to the destination.
     pub size_bytes: u64,
 }
 
 /// Result of detached path-based signing. `output` is the small `.mjksig` sidecar.
 #[derive(Debug, Clone)]
 pub struct StreamingDetachedSignResult {
+    /// Signature record produced for the canonical source bytes.
     pub signature: MajikSignature,
+    /// Detached envelope containing the new signature record.
     pub envelope: MajikSignatureEnvelope,
+    /// Atomically published `.mjksig` sidecar metadata.
     pub output: StreamingOutput,
+    /// Original native source length in bytes.
     pub source_size_bytes: u64,
+    /// Format handler selected for canonicalization.
     pub handler: String,
+    /// MIME type used by the selected handler.
     pub mime_type: String,
 }
 
 /// Result of embedded path-based signing. The source document is written to `output`.
 #[derive(Debug, Clone)]
 pub struct StreamingEmbeddedSignResult {
+    /// Signature record produced for the canonical source bytes.
     pub signature: MajikSignature,
+    /// Embedded envelope after the signature record was added.
     pub envelope: MajikSignatureEnvelope,
+    /// Atomically published signed-document metadata.
     pub output: StreamingOutput,
+    /// Original native source length in bytes.
     pub source_size_bytes: u64,
+    /// Format handler selected for canonicalization.
     pub handler: String,
+    /// MIME type used by the selected handler.
     pub mime_type: String,
 }
 
@@ -157,6 +393,15 @@ pub struct OpenedStreamFile {
 }
 
 impl OpenedStreamFile {
+    /// Open a non-empty regular file and capture metadata from the opened handle.
+    ///
+    /// Keeping the handle open reduces the risk of a path swap between validation
+    /// and subsequent streaming reads.
+    ///
+    /// # Errors
+    ///
+    /// Returns a file-input error when the path is empty, missing, unreadable,
+    /// not a regular file, or refers to an empty file.
     pub fn open(path: impl AsRef<Path>, mime_type: Option<&str>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         if path.as_os_str().is_empty() {
@@ -213,15 +458,22 @@ impl OpenedStreamFile {
         })
     }
 
+    /// Return the native path captured when this file was opened.
     pub fn path(&self) -> &Path {
         &self.path
     }
+
+    /// Return the source length captured from the open file handle.
     pub fn length(&self) -> u64 {
         self.length
     }
+
+    /// Return the UTF-8 file name when the path has one.
     pub fn name(&self) -> Option<&str> {
         self.name.as_deref()
     }
+
+    /// Return the explicit MIME override or inferred MIME type, if known.
     pub fn mime_type(&self) -> Option<&str> {
         self.mime_type.as_deref()
     }
@@ -1702,6 +1954,260 @@ fn sign_event_and_history(
 }
 
 impl SignatureClient {
+    /// Sign native files as detached batch signatures without materializing source documents.
+    ///
+    /// All manifest paths, MIME overrides, and batch counts are preflight-validated
+    /// before source files are opened. File contents are then canonicalized and
+    /// consumed sequentially through bounded readers. The result contains only the
+    /// small MJKSMAP manifest or MJKSIG sidecars, not the original document bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an empty/oversized batch, unsafe or duplicate path,
+    /// invalid MIME metadata, unsupported format, source I/O failure, size-limit
+    /// breach, cancellation, signing failure, or a source changed during processing.
+    pub fn sign_batch_detached_paths_stream(
+        &mut self,
+        inputs: &[StreamingBatchPathInput],
+        options: &BatchSignOptions,
+        context: &OpContext,
+        streaming: &mut BatchStreamingFileOptions<'_>,
+    ) -> Result<BatchSignResult> {
+        let mut prepared = prepare_streaming_batch(inputs, streaming)?;
+        let PreparedStreamingBatch {
+            sources,
+            metadata,
+            readers,
+        } = &mut prepared;
+
+        let mut core_inputs = Vec::with_capacity(inputs.len());
+        for ((path, total_bytes, mime_type), reader) in metadata.iter().zip(readers.iter_mut()) {
+            core_inputs.push(StreamingBatchFileInput {
+                path: path.clone(),
+                reader,
+                total_bytes: Some(*total_bytes),
+                mime_type: mime_type.clone(),
+            });
+        }
+
+        let chunk_size = streaming.chunk_size;
+        let max_bytes_per_file = streaming.max_bytes_per_file;
+        let cancellation = streaming.cancellation;
+        let mut progress_callback = streaming.on_progress.as_deref_mut();
+        let callback_panicked = Cell::new(false);
+        let mut guarded_progress = |progress: StreamingBatchProgress| {
+            if let Some(callback) = progress_callback.as_deref_mut() {
+                if catch_unwind(AssertUnwindSafe(|| callback(progress))).is_err() {
+                    callback_panicked.set(true);
+                }
+            }
+        };
+        let core_streaming = CoreBatchStreamingOptions {
+            chunk_size,
+            max_bytes_per_file,
+            cancellation,
+            on_progress: Some(&mut guarded_progress),
+        };
+
+        let signed = self.with_signing_key(context.account_id.as_deref(), false, |key| {
+            Ok(MajikSignature::sign_batch_detached_stream(
+                &mut core_inputs,
+                key,
+                Some(options),
+                core_streaming,
+            )?)
+        });
+        let (result, _) = self.report("signBatchDetachedPathsStream", signed)?;
+        drop(core_inputs);
+
+        if callback_panicked.get() {
+            return Err(SignatureClientError::Invalid(
+                "The streaming batch progress callback panicked; no batch result was returned"
+                    .into(),
+            ));
+        }
+        ensure_streaming_batch_sources_unchanged(sources)?;
+
+        match &result {
+            BatchSignResult::Map { map, failures, .. } => {
+                for entry in map.entries() {
+                    let envelope = MajikSignatureEnvelope::from_json(&entry.envelope)?;
+                    let signature_json = envelope.signatures().last().ok_or_else(|| {
+                        SignatureClientError::Invalid(
+                            "A streaming batch result contained an envelope without signatures"
+                                .into(),
+                        )
+                    })?;
+                    let signature = MajikSignature::from_json(signature_json)?;
+                    sign_event_and_history(self, &signature, &envelope, context.source, true);
+                }
+                for failure in failures {
+                    self.emit_error(
+                        "signBatchDetachedPathsStream",
+                        &SignatureClientError::Invalid(format!(
+                            "{}: {}",
+                            failure.path, failure.error
+                        )),
+                    );
+                }
+            }
+            BatchSignResult::Separate {
+                signatures,
+                failures,
+            } => {
+                for separate in signatures {
+                    let envelope = MajikSignatureEnvelope::from_mjksig(&separate.blob)?;
+                    let signature_json = envelope.signatures().last().ok_or_else(|| {
+                        SignatureClientError::Invalid(
+                            "A streaming batch sidecar contained no signatures".into(),
+                        )
+                    })?;
+                    let signature = MajikSignature::from_json(signature_json)?;
+                    sign_event_and_history(self, &signature, &envelope, context.source, true);
+                }
+                for failure in failures {
+                    self.emit_error(
+                        "signBatchDetachedPathsStream",
+                        &SignatureClientError::Invalid(format!(
+                            "{}: {}",
+                            failure.path, failure.error
+                        )),
+                    );
+                }
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Verify a native-file batch against a MJKSMAP manifest in one streaming pass.
+    ///
+    /// A trusted public key must be resolved from `VerifyTarget`; use the buffered
+    /// verifier for self-reported envelope-key mode. Input metadata is validated
+    /// before native source files are opened, then sources are canonicalized with
+    /// the same format-aware readers used by signing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid manifest, missing trusted key, empty or
+    /// oversized batch, unsafe/duplicate path, invalid MIME metadata, source I/O
+    /// failure, configured size-limit breach, cancellation, or verifier setup failure.
+    /// Per-file integrity and signature outcomes remain in the returned result.
+    pub fn verify_mjks_map_paths_stream(
+        &mut self,
+        map_input: crate::mjks::MjksMapInput,
+        inputs: &[StreamingBatchPathInput],
+        target: &VerifyTarget<'_>,
+        require_all_present: bool,
+        source: HistorySource,
+        streaming: &mut BatchStreamingFileOptions<'_>,
+    ) -> Result<crate::mjks::MapVerifyResult> {
+        let map = map_input.resolve()?;
+        let public_keys = self.resolve_signer_public_keys(target)?.ok_or_else(|| {
+            SignatureClientError::Invalid(
+                "Streaming MJKSMAP verification requires a trusted signer key, contact, or address."
+                    .into(),
+            )
+        })?;
+
+        let mut prepared = prepare_streaming_batch(inputs, streaming)?;
+        let PreparedStreamingBatch {
+            sources,
+            metadata,
+            readers,
+        } = &mut prepared;
+
+        let mut core_inputs = Vec::with_capacity(inputs.len());
+        for ((path, total_bytes, _mime_type), reader) in metadata.iter().zip(readers.iter_mut()) {
+            core_inputs.push(StreamingBatchVerifyInput {
+                path: path.clone(),
+                reader,
+                total_bytes: Some(*total_bytes),
+            });
+        }
+
+        let verify_options = BatchVerifyOptions {
+            expected_signer_id: target.expected_signer_id.map(str::to_owned),
+            now: target.now,
+            require_all_present,
+        };
+        let chunk_size = streaming.chunk_size;
+        let max_bytes_per_file = streaming.max_bytes_per_file;
+        let cancellation = streaming.cancellation;
+        let mut progress_callback = streaming.on_progress.as_deref_mut();
+        let callback_panicked = Cell::new(false);
+        let mut guarded_progress = |progress: StreamingBatchProgress| {
+            if let Some(callback) = progress_callback.as_deref_mut() {
+                if catch_unwind(AssertUnwindSafe(|| callback(progress))).is_err() {
+                    callback_panicked.set(true);
+                }
+            }
+        };
+        let core_streaming = CoreBatchStreamingOptions {
+            chunk_size,
+            max_bytes_per_file,
+            cancellation,
+            on_progress: Some(&mut guarded_progress),
+        };
+
+        let outcome = MajikSignature::verify_files_from_mjksmap_stream(
+            &map,
+            &mut core_inputs,
+            &public_keys,
+            Some(&verify_options),
+            core_streaming,
+        )
+        .map_err(Into::into);
+        let results = self.report("verifyMjksMapPathsStream", outcome)?;
+        drop(core_inputs);
+
+        if callback_panicked.get() {
+            return Err(SignatureClientError::Invalid(
+                "The streaming batch progress callback panicked; no verification result was returned"
+                    .into(),
+            ));
+        }
+        ensure_streaming_batch_sources_unchanged(sources)?;
+
+        let missing_from_batch = if require_all_present {
+            let mut covered: HashSet<String> = inputs
+                .iter()
+                .map(|file| file.manifest_path.clone())
+                .collect();
+            for result in &results {
+                if let Some(original) = result.relocated_from.as_ref() {
+                    covered.insert(original.clone());
+                }
+            }
+            map.entries()
+                .iter()
+                .filter(|entry| !covered.contains(&entry.path))
+                .map(|entry| entry.path.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let summary = MajikSignature::summarize_batch_verification(&results);
+
+        let fingerprint = self.active_fingerprint();
+        for result in &results {
+            if let Some(first) = result.results.as_ref().and_then(|items| items.first()) {
+                if let Some(hash) = first.content_hash.clone().filter(|value| !value.is_empty()) {
+                    let mut note = OpNote::new(&hash, HistoryType::Verify, source);
+                    note.detached = true;
+                    note.valid = Some(first.valid);
+                    self.note_history(fingerprint.as_deref(), note, &hash, None);
+                }
+            }
+        }
+
+        Ok(crate::mjks::MapVerifyResult {
+            results,
+            summary,
+            missing_from_batch,
+        })
+    }
+
     /// Sign a native file path into a detached .mjksig sidecar using bounded memory.
     /// Use `sign_file_detached_stream_with_prior` to verify and extend a previous file version
     /// without loading that previous file into memory.
@@ -2631,6 +3137,70 @@ mod tests {
         let _ = fs::remove_file(path);
     }
 
+    #[test]
+    fn prepares_multiple_canonical_streaming_batch_readers() {
+        let first_path = std::env::temp_dir().join(format!(
+            "majik-stream-batch-first-{}.bin",
+            uuid::Uuid::new_v4()
+        ));
+        let second_path = std::env::temp_dir().join(format!(
+            "majik-stream-batch-second-{}.bin",
+            uuid::Uuid::new_v4()
+        ));
+        let first = b"first canonical stream input".to_vec();
+        let second = b"second canonical stream input".to_vec();
+        fs::write(&first_path, &first).unwrap();
+        fs::write(&second_path, &second).unwrap();
+
+        let inputs = vec![
+            StreamingBatchPathInput {
+                manifest_path: "docs/first.bin".into(),
+                source_path: first_path.clone(),
+                mime_type: Some("application/octet-stream".into()),
+            },
+            StreamingBatchPathInput {
+                manifest_path: "docs/second.bin".into(),
+                source_path: second_path.clone(),
+                mime_type: Some("application/octet-stream".into()),
+            },
+        ];
+        let mut prepared =
+            prepare_streaming_batch(&inputs, &BatchStreamingFileOptions::default()).unwrap();
+
+        assert_eq!(prepared.sources.len(), 2);
+        assert_eq!(prepared.readers.len(), 2);
+        assert_eq!(prepared.metadata[0].0, "docs/first.bin");
+        assert_eq!(prepared.metadata[0].1, first.len() as u64);
+        assert_eq!(prepared.metadata[1].0, "docs/second.bin");
+        assert_eq!(prepared.metadata[1].1, second.len() as u64);
+
+        let mut first_read = Vec::new();
+        let mut second_read = Vec::new();
+        prepared.readers[0].read_to_end(&mut first_read).unwrap();
+        prepared.readers[1].read_to_end(&mut second_read).unwrap();
+        assert_eq!(first_read, first);
+        assert_eq!(second_read, second);
+        ensure_streaming_batch_sources_unchanged(&prepared.sources).unwrap();
+
+        let _ = fs::remove_file(first_path);
+        let _ = fs::remove_file(second_path);
+    }
+
+    #[test]
+    fn batch_chunk_size_matches_the_core_sixty_four_mib_limit() {
+        let maximum = BatchStreamingFileOptions {
+            chunk_size: 64 * 1024 * 1024,
+            ..Default::default()
+        };
+        assert!(maximum.validate().is_ok());
+
+        let too_large = BatchStreamingFileOptions {
+            chunk_size: 64 * 1024 * 1024 + 1,
+            ..Default::default()
+        };
+        assert!(too_large.validate().is_err());
+    }
+
     #[cfg(unix)]
     #[test]
     fn ten_gib_sparse_file_is_opened_without_materializing_its_contents() {
@@ -2646,6 +3216,103 @@ mod tests {
         let source = OpenedStreamFile::open(&path, None).unwrap();
         assert_eq!(source.length(), 10 * 1024 * 1024 * 1024);
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn batch_preflight_rejects_empty_traversal_and_control_paths_before_opening_files() {
+        let bidi_path = format!("bad{}name.bin", char::from_u32(0x202e).unwrap());
+        let paths = [
+            "",
+            "../escape.bin",
+            "docs/../../escape.bin",
+            "bad\0name.bin",
+        ];
+        for path in paths
+            .iter()
+            .copied()
+            .chain(std::iter::once(bidi_path.as_str()))
+        {
+            let input = StreamingBatchPathInput {
+                manifest_path: path.into(),
+                source_path: PathBuf::from("this-source-must-not-be-opened"),
+                mime_type: None,
+            };
+            assert!(
+                matches!(
+                    prepare_streaming_batch(&[input], &BatchStreamingFileOptions::default()),
+                    Err(SignatureClientError::Invalid(_))
+                ),
+                "expected unsafe path to fail before source open: {path:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_preflight_rejects_overlong_paths_and_mime_metadata() {
+        let long_path_input = StreamingBatchPathInput {
+            manifest_path: "p".repeat(MAX_STREAMING_BATCH_PATH_CHARS + 1),
+            source_path: PathBuf::from("missing-source"),
+            mime_type: None,
+        };
+        assert!(matches!(
+            prepare_streaming_batch(&[long_path_input], &BatchStreamingFileOptions::default()),
+            Err(SignatureClientError::Invalid(_))
+        ));
+
+        let long_mime_input = StreamingBatchPathInput {
+            manifest_path: "docs/file.bin".into(),
+            source_path: PathBuf::from("missing-source"),
+            mime_type: Some("x".repeat(MAX_STREAMING_BATCH_MIME_TYPE_CHARS + 1)),
+        };
+        assert!(matches!(
+            prepare_streaming_batch(&[long_mime_input], &BatchStreamingFileOptions::default()),
+            Err(SignatureClientError::Invalid(_))
+        ));
+
+        let control_mime_input = StreamingBatchPathInput {
+            manifest_path: "docs/file.bin".into(),
+            source_path: PathBuf::from("missing-source"),
+            mime_type: Some("application/\0octet-stream".into()),
+        };
+        assert!(matches!(
+            prepare_streaming_batch(&[control_mime_input], &BatchStreamingFileOptions::default()),
+            Err(SignatureClientError::Invalid(_))
+        ));
+    }
+
+    #[test]
+    fn batch_preflight_rejects_normalized_duplicate_paths() {
+        let inputs = [
+            StreamingBatchPathInput {
+                manifest_path: "docs\\one.bin".into(),
+                source_path: PathBuf::from("missing-first"),
+                mime_type: None,
+            },
+            StreamingBatchPathInput {
+                manifest_path: "docs/one.bin".into(),
+                source_path: PathBuf::from("missing-second"),
+                mime_type: None,
+            },
+        ];
+        assert!(matches!(
+            prepare_streaming_batch(&inputs, &BatchStreamingFileOptions::default()),
+            Err(SignatureClientError::Invalid(message)) if message.contains("Duplicate path")
+        ));
+    }
+
+    #[test]
+    fn batch_preflight_rejects_more_than_the_manifest_entry_limit() {
+        let inputs = (0..=MAX_STREAMING_BATCH_FILES)
+            .map(|index| StreamingBatchPathInput {
+                manifest_path: format!("docs/{index}.bin"),
+                source_path: PathBuf::from("missing-source"),
+                mime_type: None,
+            })
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            prepare_streaming_batch(&inputs, &BatchStreamingFileOptions::default()),
+            Err(SignatureClientError::Invalid(message)) if message.contains("10000-file")
+        ));
     }
 
     #[test]

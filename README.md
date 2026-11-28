@@ -1,15 +1,12 @@
 # Majik Signature Client
 
-**Majik Signature Client** is a high-level Rust wrapper for `MajikSignature`, built directly on top of `MajikKeyClient`.
+**Majik Signature Client** is the high-level Rust application client for `MajikSignature`. It composes `majik-key-client` through a `KeyClient<SigHooks>` owned by `SignatureClient`; it does not inherit from or extend `MajikKeyClient`.
 
-Designed to be used natively within the Majikah ecosystem, it inherits all core `MajikKey` account management—such as creation, lock/unlock states, and active-account tracking—while introducing domain-specific functionality for file signing, contact management, and encrypted reusable stamps.
-
-Rust port of the TS [@majikah/majik-signature-client](https://www.npmjs.com/package/@majikah/majik-signature), composed on `majik-key-client`: `SignatureClient` owns a
-`KeyClient<SigHooks>` (`keys()` / `keys_mut()`) plus contacts, stamps, logs, preferences and signing.
+The client combines key-account lifecycle access (`keys()` / `keys_mut()`) with the signature-specific contact directory, stamps, logs, preferences, file operations, and native streaming adapters. It is the Rust counterpart of the TypeScript [@majikah/majik-signature-client](https://www.npmjs.com/package/@majikah/majik-signature-client).
 
 ## Core Capabilities
 
-* **Integrated Key & Account Management**: Extends `MajikKeyClient` to seamlessly handle account lifecycles and cryptographic unlocking.
+* **Integrated Key & Account Management**: Exposes the composed `KeyClient<SigHooks>` for account lifecycle and cryptographic unlocking operations.
 * **Contact & Group Directory**: Utilizes `MajikContactManager` for full contact CRUD operations, including system/user groups, favorites, and blocked lists.
 * **Post-Quantum Signing & Verification**: Provides file signing, detached signing, batch operations, and verification, with public-key resolution from the internal contact directory or active keystore.
 * **Multi-sig & Envelope Sealing**: Built-in support for restricted allowlists (`expectedSigners`), multi-sig pending states, and cryptographic sealing to prevent further modifications to a file.
@@ -20,7 +17,7 @@ Rust port of the TS [@majikah/majik-signature-client](https://www.npmjs.com/pack
 
 ## Bounded-memory file streaming
 
-The `streaming` module adds native-path APIs for large files. Unlike the existing `FileInput::load()` and byte-slice methods, these operations read and write fixed-size chunks and do not materialize the source document as a `Vec<u8>` or base64 payload. The default chunk is 1 MiB; callers can choose 64 KiB–128 MiB, supply an optional maximum input size, cancel between reads, and receive byte progress. Streaming buffer allocation uses fallible reservation and reports the stable `memoryAllocation` error kind so native integrations can downgrade and retry before output publication. By default, no arbitrary total file-size ceiling is imposed on streaming operations.
+The `streaming` module adds native-path APIs for large files. Unlike the existing `FileInput::load()` and byte-slice methods, these operations read and write fixed-size chunks and do not materialize the source document as a `Vec<u8>` or base64 payload. The default chunk is 1 MiB; callers can choose 64 KiB–64 MiB, supply an optional maximum input size, cancel between reads, and receive byte progress. Streaming buffer allocation uses fallible reservation and reports the stable `memoryAllocation` error kind so native integrations can downgrade and retry before output publication. By default, no arbitrary total file-size ceiling is imposed on streaming operations.
 
 ```rust
 use std::sync::atomic::AtomicBool;
@@ -45,6 +42,57 @@ let result = client.sign_file_detached_stream(
 println!("Signed {} bytes", result.source_size_bytes);
 ```
 
+### Streaming detached batch signing and MJKSMAP verification
+
+The 1.6.0 client adds path-backed batch operations that reuse the same format-aware
+canonicalization plans as the single-file streaming APIs. Each input pairs a
+relative `manifest_path` with a native `source_path`; the client opens the
+source, constructs a canonical `RewrittenFileReader`, and passes those readers
+to the core 1.6.0 streaming batch operations.
+
+```rust
+use majik_signature_client::{
+    BatchSignOptions, BatchStreamingFileOptions, OpContext, SignatureClient,
+    StreamingBatchPathInput,
+};
+
+let inputs = vec![
+    StreamingBatchPathInput {
+        manifest_path: "contracts/contract.pdf".into(),
+        source_path: "./files/contract.pdf".into(),
+        mime_type: Some("application/pdf".into()),
+    },
+    StreamingBatchPathInput {
+        manifest_path: "media/demo.mp4".into(),
+        source_path: "./files/demo.mp4".into(),
+        mime_type: Some("video/mp4".into()),
+    },
+];
+
+let mut streaming = BatchStreamingFileOptions::default();
+let result = client.sign_batch_detached_paths_stream(
+    &inputs,
+    &BatchSignOptions::default(),
+    &OpContext::default(),
+    &mut streaming,
+)?;
+```
+
+The result preserves the core `BatchSignResult` modes: one MJKSMAP manifest or
+separate MJKSIG sidecars. Source documents are not returned or materialized.
+Use `write_atomic_bytes()` to publish the small manifest or sidecar bytes when
+a filesystem destination is needed.
+
+Use `verify_mjks_map_paths_stream()` with a `VerifyTarget` containing a trusted
+key, contact, or address. Streaming verification deliberately requires trusted
+public keys; use the existing buffered `verify_mjks_map()` for self-reported
+envelope-key verification. Both streaming operations preserve path-first
+tamper detection and content-hash relocation behavior, support per-file
+progress, maximum input sizes, and cancellation.
+
+The supported chunk override range is 64 KiB–64 MiB, matching the core 1.6.0
+contract. The 1 MiB default and 8 MiB automatic core threshold are unchanged.
+
 ### Streaming format support
 
 | Operation | Supported content | Notes |
@@ -57,7 +105,7 @@ println!("Signed {} bytes", result.source_size_bytes);
 | Embedded sign / verify | OOXML/ODF Office files | Rebuilds the deterministic canonical ZIP from disk-staged entries and appends/replaces the final majik-signature.json entry. The full uncompressed archive is never materialised in memory. |
 | Embedded sign / verify | Matroska/WebM | Uses the existing universal trailer representation; the EBML/media payload is streamed unchanged. |
 
-The default chunk size is 1 MiB (configurable from 64 KiB to 8 MiB). The default streaming API has no arbitrary total input-size cap for ordinary files; callers can set max_bytes. Format metadata is separately bounded (32 MiB for container metadata and 16 MiB for embedded envelopes). Office ZIP processing retains the core 512 MiB total uncompressed-content ceiling, adds a 32 MiB central-directory safety limit, and caps the embedded signature entry at 8 MiB. Office staging and archive writes remain bounded and observe cancellation; progress callbacks report the canonical content hashing/signing passes rather than a separate ZIP decompression progress stream. These are format-specific safety bounds, not arbitrary caps on standalone large media payloads.
+The default chunk size is 1 MiB (configurable from 64 KiB to 64 MiB). The default streaming API has no arbitrary total input-size cap for ordinary files; callers can set max_bytes. Format metadata is separately bounded (32 MiB for container metadata and 16 MiB for embedded envelopes). Office ZIP processing retains the core 512 MiB total uncompressed-content ceiling, adds a 32 MiB central-directory safety limit, and caps the embedded signature entry at 8 MiB. Office staging and archive writes remain bounded and observe cancellation; progress callbacks report the canonical content hashing/signing passes rather than a separate ZIP decompression progress stream. These are format-specific safety bounds, not arbitrary caps on standalone large media payloads.
 
 ### Path-backed revision signing
 
@@ -81,6 +129,27 @@ Streaming operations record signature/history metadata but intentionally do not 
 | `stamps`, `stamps_api` | encrypted stamps (`MajikFile` envelopes), repositories (`majik_signature_stamps`), manager, client API |
 | `backup` | `STMP` / `MJKC` / `MJKA` backups (magic header + `majik-cjson`), read / restore / selective restore |
 | `logs`, `prefs`, `events`, `hooks`, `shared`, `bus` | history + activity logs, user app preferences, one merged event stream, own-account<->contact sync |
+
+
+## Client-side batch input bounds
+
+The 1.6.0 native batch adapter performs a complete metadata preflight before opening source files:
+
+- A batch contains 1–10,000 files, matching the core MJKSMAP entry limit.
+- Manifest paths are limited to 4,096 UTF-16 code units. Control/bidi characters, traversal segments, and duplicate paths after core-compatible normalization are rejected.
+- Optional MIME overrides are limited to 1,024 UTF-16 code units and reject control characters.
+- The chunk override remains 64 KiB–64 MiB (1 MiB default). `max_bytes_per_file` is an optional per-file ceiling checked against both the native source length and canonical streamed input; `None` does not impose an arbitrary total file-size cap.
+- Cancellation is checked during preparation and streaming. Progress callbacks are isolated from panics so a callback cannot unwind through the client; a panicked callback causes the operation to return an error.
+
+The core library remains responsible for MJKSMAP/MJKSIG envelope parsing, canonical signature validation, stream hashing, and cryptographic verification. Adapter tests focus on native-path preparation and caller-controlled metadata, not duplicate cryptographic parser test vectors.
+
+## Security and trust boundaries
+
+Verification with `VerifyTarget` requires a trusted public key resolved from a key, contact, or address. A successful signature check proves consistency with that public key; it does not independently prove the real-world identity or authorization of its owner. Establish key trust out of band and perform application authorization separately.
+
+Do not treat arbitrary signed files as safe to render, extract, or execute. Apply host-application file-type, size, and authorization policies. Keep private keys and recovery phrases secret, do not log source contents or key material, and use storage adapters appropriate to the host environment.
+
+See [SECURITY.md](SECURITY.md) for vulnerability reporting guidance and [CHANGELOG.md](CHANGELOG.md) for release notes.
 
 ## License
 
