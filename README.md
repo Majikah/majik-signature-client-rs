@@ -138,7 +138,7 @@ The 1.6.0 native batch adapter performs a complete metadata preflight before ope
 - A batch contains 1–10,000 files, matching the core MJKSMAP entry limit.
 - Manifest paths are limited to 4,096 UTF-16 code units. Control/bidi characters, traversal segments, and duplicate paths after core-compatible normalization are rejected.
 - Optional MIME overrides are limited to 1,024 UTF-16 code units and reject control characters.
-- The chunk override remains 64 KiB–64 MiB (1 MiB default). `max_bytes_per_file` is an optional canonical-input ceiling applied independently to each file; `None` does not impose an arbitrary total file-size cap.
+- The chunk override remains 64 KiB–64 MiB (1 MiB default). `max_bytes_per_file` is an optional per-file ceiling checked against both the native source length and canonical streamed input; `None` does not impose an arbitrary total file-size cap.
 - Cancellation is checked during preparation and streaming. Progress callbacks are isolated from panics so a callback cannot unwind through the client; a panicked callback causes the operation to return an error.
 
 The core library remains responsible for MJKSMAP/MJKSIG envelope parsing, canonical signature validation, stream hashing, and cryptographic verification. Adapter tests focus on native-path preparation and caller-controlled metadata, not duplicate cryptographic parser test vectors.

@@ -133,7 +133,7 @@ pub struct StreamingBatchPathInput {
 pub struct BatchStreamingFileOptions<'a> {
     /// Read/write chunk size in the inclusive range 64 KiB–64 MiB.
     pub chunk_size: usize,
-    /// Optional canonical input-size ceiling applied independently to each file.
+    /// Optional input-size ceiling checked against the native source and canonical stream per file.
     pub max_bytes_per_file: Option<u64>,
     /// Optional cancellation flag checked between file preparation and reads.
     pub cancellation: Option<&'a AtomicBool>,
