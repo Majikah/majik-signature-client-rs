@@ -185,7 +185,9 @@ struct PreparedStreamingBatch {
 fn normalize_and_validate_batch_path(path: &str) -> Result<String> {
     let invalid = |message: &str| SignatureClientError::Invalid(message.to_owned());
     if path.trim().is_empty() {
-        return Err(invalid("Every streaming batch file must have a non-empty manifest path"));
+        return Err(invalid(
+            "Every streaming batch file must have a non-empty manifest path",
+        ));
     }
     if path.encode_utf16().count() > MAX_STREAMING_BATCH_PATH_CHARS
         || path.chars().any(|character| {
@@ -204,13 +206,18 @@ fn normalize_and_validate_batch_path(path: &str) -> Result<String> {
     // Mirror the core map's alias normalization before checking traversal.
     let mut normalized = path.replace('\\', "/").trim().to_owned();
     if normalized.as_bytes().get(1) == Some(&b':')
-        && normalized.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        && normalized
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphabetic)
     {
         normalized.drain(..2);
     }
     normalized = normalized.trim_start_matches('/').to_owned();
     if normalized.is_empty() || normalized.split('/').any(|segment| segment == "..") {
-        return Err(invalid("Streaming batch manifest path must resolve to a non-traversing relative path"));
+        return Err(invalid(
+            "Streaming batch manifest path must resolve to a non-traversing relative path",
+        ));
     }
     Ok(normalized)
 }
@@ -219,9 +226,9 @@ fn normalize_and_validate_batch_path(path: &str) -> Result<String> {
 fn validate_batch_mime_type(mime_type: Option<&str>) -> Result<()> {
     if let Some(value) = mime_type {
         if value.encode_utf16().count() > MAX_STREAMING_BATCH_MIME_TYPE_CHARS
-            || value.chars().any(|character| {
-                matches!(character, '\u{0000}'..='\u{001f}' | '\u{007f}')
-            })
+            || value
+                .chars()
+                .any(|character| matches!(character, '\u{0000}'..='\u{001f}' | '\u{007f}'))
         {
             return Err(SignatureClientError::Invalid(
                 "Streaming batch MIME metadata exceeds the supported length or contains control characters".into(),
@@ -3214,8 +3221,17 @@ mod tests {
     #[test]
     fn batch_preflight_rejects_empty_traversal_and_control_paths_before_opening_files() {
         let bidi_path = format!("bad{}name.bin", char::from_u32(0x202e).unwrap());
-        let paths = ["", "../escape.bin", "docs/../../escape.bin", "bad\0name.bin"];
-        for path in paths.iter().copied().chain(std::iter::once(bidi_path.as_str())) {
+        let paths = [
+            "",
+            "../escape.bin",
+            "docs/../../escape.bin",
+            "bad\0name.bin",
+        ];
+        for path in paths
+            .iter()
+            .copied()
+            .chain(std::iter::once(bidi_path.as_str()))
+        {
             let input = StreamingBatchPathInput {
                 manifest_path: path.into(),
                 source_path: PathBuf::from("this-source-must-not-be-opened"),
