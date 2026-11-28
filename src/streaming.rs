@@ -3311,7 +3311,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(matches!(
             prepare_streaming_batch(&inputs, &BatchStreamingFileOptions::default()),
-            Err(SignatureClientError::Invalid(message)) if message.contains("10,000-file")
+            Err(SignatureClientError::Invalid(message)) if message.contains("10000-file")
         ));
     }
 
